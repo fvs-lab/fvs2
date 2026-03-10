@@ -38,10 +38,11 @@ type Commit struct {
 }
 
 type FileEntry struct {
-	Path   string         `json:"path"`
-	Mode   uint32         `json:"mode"`
-	Size   int64          `json:"size"`
-	Blocks []core.BlockID `json:"blocks"`
+	Path    string         `json:"path"`
+	Mode    uint32         `json:"mode"`
+	Size    int64          `json:"size"`
+	ModTime int64          `json:"mod_time"`
+	Blocks  []core.BlockID `json:"blocks"`
 }
 
 var ErrNotInitialized = errors.New("repo not initialized (run: fvs2 init)")
