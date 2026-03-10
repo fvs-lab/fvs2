@@ -140,6 +140,7 @@ func (c *StatesCmd) Run() error {
 type RestoreCmd struct {
 	State string `cli:"state,s" required:"true" help:"state id (full or prefix)"`
 	To    string `cli:"to" help:"restore destination (default: --path)"`
+	Reset bool   `cli:"reset" help:"reset HEAD to the restored commit"`
 	Root  *CLI   `internal:"ignore"`
 }
 
@@ -170,6 +171,11 @@ func (c *RestoreCmd) Run() error {
 	}
 	if err := restoreCommit(dest, store, commit); err != nil {
 		return err
+	}
+	if c.Reset {
+		if err := meta.AdvanceHeadAfterCommit(root, id); err != nil {
+			return err
+		}
 	}
 	fmt.Fprintf(os.Stdout, "ok: restored %s into %s\n", id[:12], dest)
 	return nil
@@ -273,7 +279,8 @@ func (c *CheckoutCmd) Run() error {
 }
 
 type StatusCmd struct {
-	Root *CLI `internal:"ignore"`
+	CheckDirty bool `cli:"check-dirty" help:"perform expensive hashing to detect changed files"`
+	Root       *CLI `internal:"ignore"`
 }
 
 func (c *StatusCmd) Run() error {
@@ -300,9 +307,14 @@ func (c *StatusCmd) Run() error {
 		fmt.Fprintf(os.Stdout, "head_commit=\n")
 	}
 
-	dirty, changed, derr := computeDirty(root, headCommit)
-	if derr != nil {
-		return derr
+	dirty := false
+	changed := 0
+	if c.CheckDirty {
+		var derr error
+		dirty, changed, derr = computeDirty(root, headCommit)
+		if derr != nil {
+			return derr
+		}
 	}
 	fmt.Fprintf(os.Stdout, "dirty=%v\n", dirty)
 	fmt.Fprintf(os.Stdout, "changed_files=%d\n", changed)
