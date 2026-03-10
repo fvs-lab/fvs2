@@ -426,7 +426,7 @@ func snapshotDirectory(root string, store core.BlockStore, blockSize int) ([]met
 		if err != nil {
 			return err
 		}
-		files = append(files, meta.FileEntry{Path: filepath.ToSlash(rel), Mode: uint32(info.Mode().Perm()), Size: size, Blocks: blocks})
+		files = append(files, meta.FileEntry{Path: filepath.ToSlash(rel), Mode: uint32(info.Mode().Perm()), Size: size, ModTime: info.ModTime().Unix(), Blocks: blocks})
 		return nil
 	})
 	if err != nil {
@@ -497,6 +497,14 @@ func restoreCommit(dest string, store core.BlockStore, c meta.Commit) error {
 		if strings.HasPrefix(filepath.Clean(outPath), filepath.Join(dest, ".fvs2")) {
 			continue
 		}
+
+		if info, err := os.Stat(outPath); err == nil {
+			if info.Size() == fe.Size && uint32(info.Mode().Perm()) == fe.Mode && info.ModTime().Unix() == fe.ModTime {
+				// Skip if metadata matches
+				continue
+			}
+		}
+
 		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 			return err
 		}
@@ -523,6 +531,8 @@ func restoreCommit(dest string, store core.BlockStore, c meta.Commit) error {
 		if err := f.Close(); err != nil {
 			return err
 		}
+		// Set mod time to allow future fast skips
+		_ = os.Chtimes(outPath, time.Now(), time.Unix(fe.ModTime, 0))
 	}
 	return nil
 }
@@ -672,10 +682,11 @@ func equalBlocksBlockIDs(a []core.BlockID, b []string) bool {
 }
 
 type snapEntry struct {
-	Path   string
-	Mode   uint32
-	Size   int64
-	Blocks []string
+	Path    string
+	Mode    uint32
+	Size    int64
+	ModTime int64
+	Blocks  []string
 }
 
 func snapshotIDs(root string, blockSize int) (map[string]snapEntry, error) {
@@ -689,7 +700,7 @@ func snapshotIDs(root string, blockSize int) (map[string]snapEntry, error) {
 		if err != nil {
 			return nil, err
 		}
-		out[f.Path] = snapEntry{Path: f.Path, Mode: f.Mode, Size: size, Blocks: blocks}
+		out[f.Path] = snapEntry{Path: f.Path, Mode: f.Mode, Size: size, ModTime: f.ModTime, Blocks: blocks}
 	}
 	return out, nil
 }
@@ -726,7 +737,7 @@ func snapshotDirectoryNoStore(root string) ([]meta.FileEntry, error) {
 		if !info.Mode().IsRegular() {
 			return nil
 		}
-		files = append(files, meta.FileEntry{Path: filepath.ToSlash(rel), Mode: uint32(info.Mode().Perm()), Size: info.Size()})
+		files = append(files, meta.FileEntry{Path: filepath.ToSlash(rel), Mode: uint32(info.Mode().Perm()), Size: info.Size(), ModTime: info.ModTime().Unix()})
 		return nil
 	})
 	if err != nil {
