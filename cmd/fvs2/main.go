@@ -524,6 +524,7 @@ func restoreCommit(dest string, store core.BlockStore, c meta.Commit) error {
 		if err != nil {
 			return err
 		}
+		bw := bufio.NewWriterSize(f, 65536) // 64KB buffer
 		var written int64
 		for _, bid := range fe.Blocks {
 			b, err := store.Get(bid)
@@ -531,7 +532,7 @@ func restoreCommit(dest string, store core.BlockStore, c meta.Commit) error {
 				_ = f.Close()
 				return err
 			}
-			if _, err := f.Write(b); err != nil {
+			if _, err := bw.Write(b); err != nil {
 				_ = f.Close()
 				return err
 			}
@@ -539,6 +540,10 @@ func restoreCommit(dest string, store core.BlockStore, c meta.Commit) error {
 			if written >= fe.Size {
 				break
 			}
+		}
+		if err := bw.Flush(); err != nil {
+			_ = f.Close()
+			return err
 		}
 		if err := f.Close(); err != nil {
 			return err
