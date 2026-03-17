@@ -431,6 +431,9 @@ func snapshotDirectory(root string, store core.BlockStore, blockSize int) ([]met
 		}
 		info, err := d.Info()
 		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
 			return err
 		}
 		if !info.Mode().IsRegular() {
@@ -726,6 +729,9 @@ func snapshotIDs(root string, blockSize int) (map[string]snapEntry, error) {
 		if err != nil {
 			return nil, err
 		}
+		if blocks == nil && size == 0 {
+			continue // skipped due to ENOENT in hashFileBlocks
+		}
 		out[f.Path] = snapEntry{Path: f.Path, Mode: f.Mode, Size: size, ModTime: f.ModTime, Blocks: blocks}
 	}
 	return out, nil
@@ -758,6 +764,9 @@ func snapshotDirectoryNoStore(root string) ([]meta.FileEntry, error) {
 		}
 		info, err := d.Info()
 		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
 			return err
 		}
 		if !info.Mode().IsRegular() {
@@ -776,6 +785,9 @@ func snapshotDirectoryNoStore(root string) ([]meta.FileEntry, error) {
 func hashFileBlocks(path string, blockSize int) ([]string, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, 0, nil // skip successfully
+		}
 		return nil, 0, err
 	}
 	defer f.Close()
