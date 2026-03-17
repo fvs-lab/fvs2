@@ -403,6 +403,9 @@ func snapshotDirectory(root string, store core.BlockStore, blockSize int) ([]met
 
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			if os.IsNotExist(walkErr) {
+				return nil
+			}
 			return walkErr
 		}
 		rel, err := filepath.Rel(root, p)
@@ -438,6 +441,9 @@ func snapshotDirectory(root string, store core.BlockStore, blockSize int) ([]met
 		if err != nil {
 			return err
 		}
+		if blocks == nil && size == 0 {
+			return nil // skipped due to ENOENT in putFileBlocks
+		}
 		files = append(files, meta.FileEntry{Path: filepath.ToSlash(rel), Mode: uint32(info.Mode().Perm()), Size: size, ModTime: info.ModTime().Unix(), Blocks: blocks})
 		return nil
 	})
@@ -451,6 +457,9 @@ func snapshotDirectory(root string, store core.BlockStore, blockSize int) ([]met
 func putFileBlocks(path string, store core.BlockStore, blockSize int) ([]core.BlockID, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, 0, nil // skip successfully
+		}
 		return nil, 0, err
 	}
 	defer f.Close()
