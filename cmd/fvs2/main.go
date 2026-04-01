@@ -71,6 +71,7 @@ func (c *InitCmd) Run() error {
 
 type CommitCmd struct {
 	Message string `cli:"message,m" help:"commit message"`
+	Verbose bool   `cli:"verbose,v" help:"print verbose logs"`
 	Root    *CLI   `internal:"ignore"`
 }
 
@@ -100,7 +101,7 @@ func (c *CommitCmd) Run() error {
 		}
 	}
 
-	files, err := snapshotDirectory(root, store, cfg.BlockSize, headFiles)
+	files, err := snapshotDirectory(root, store, cfg.BlockSize, headFiles, c.Verbose)
 	if err != nil {
 		return err
 	}
@@ -150,10 +151,11 @@ func (c *StatesCmd) Run() error {
 }
 
 type RestoreCmd struct {
-	State string `cli:"state,s" required:"true" help:"state id (full or prefix)"`
-	To    string `cli:"to" help:"restore destination (default: --path)"`
-	Reset bool   `cli:"reset" help:"reset HEAD to the restored commit"`
-	Root  *CLI   `internal:"ignore"`
+	State   string `cli:"state,s" required:"true" help:"state id (full or prefix)"`
+	To      string `cli:"to" help:"restore destination (default: --path)"`
+	Reset   bool   `cli:"reset" help:"reset HEAD to the restored commit"`
+	Verbose bool   `cli:"verbose,v" help:"print verbose logs"`
+	Root    *CLI   `internal:"ignore"`
 }
 
 func (c *RestoreCmd) Run() error {
@@ -181,7 +183,7 @@ func (c *RestoreCmd) Run() error {
 			return err
 		}
 	}
-	if err := restoreCommit(dest, store, commit); err != nil {
+	if err := restoreCommit(dest, store, commit, c.Verbose); err != nil {
 		return err
 	}
 	if c.Reset {
@@ -410,7 +412,7 @@ func absClean(p string) (string, error) {
 	return filepath.Clean(a), nil
 }
 
-func snapshotDirectory(root string, store core.BlockStore, blockSize int, headFiles map[string]meta.FileEntry) ([]meta.FileEntry, error) {
+func snapshotDirectory(root string, store core.BlockStore, blockSize int, headFiles map[string]meta.FileEntry, verbose bool) ([]meta.FileEntry, error) {
 	var files []meta.FileEntry
 
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
@@ -460,6 +462,10 @@ func snapshotDirectory(root string, store core.BlockStore, blockSize int, headFi
 					return nil
 				}
 			}
+		}
+
+		if verbose {
+			fmt.Printf("hashing: %s\n", relSlash)
 		}
 
 		blocks, size, perr := putFileBlocks(p, store, blockSize)
@@ -537,11 +543,15 @@ func appendIndex(root string, sum meta.CommitSummary) error {
 	return meta.SaveIndex(root, idx)
 }
 
-func restoreCommit(dest string, store core.BlockStore, c meta.Commit) error {
+func restoreCommit(dest string, store core.BlockStore, c meta.Commit, verbose bool) error {
 	for _, fe := range c.Files {
 		outPath := filepath.Join(dest, filepath.FromSlash(fe.Path))
 		if strings.HasPrefix(filepath.Clean(outPath), filepath.Join(dest, ".fvs2")) {
 			continue
+		}
+
+		if verbose {
+			fmt.Printf("restoring: %s\n", fe.Path)
 		}
 
 		if info, err := os.Stat(outPath); err == nil {
