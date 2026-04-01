@@ -88,7 +88,19 @@ func (c *CommitCmd) Run() error {
 		return err
 	}
 
-	files, err := snapshotDirectory(root, store, cfg.BlockSize)
+	var headFiles map[string]meta.FileEntry
+	headCommit, _ := meta.ResolveHeadCommit(root)
+	if headCommit != "" {
+		hc, err := meta.LoadCommit(root, headCommit)
+		if err == nil {
+			headFiles = make(map[string]meta.FileEntry, len(hc.Files))
+			for _, f := range hc.Files {
+				headFiles[f.Path] = f
+			}
+		}
+	}
+
+	files, err := snapshotDirectory(root, store, cfg.BlockSize, headFiles)
 	if err != nil {
 		return err
 	}
@@ -398,7 +410,7 @@ func absClean(p string) (string, error) {
 	return filepath.Clean(a), nil
 }
 
-func snapshotDirectory(root string, store core.BlockStore, blockSize int) ([]meta.FileEntry, error) {
+func snapshotDirectory(root string, store core.BlockStore, blockSize int, headFiles map[string]meta.FileEntry) ([]meta.FileEntry, error) {
 	var files []meta.FileEntry
 
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
@@ -439,15 +451,25 @@ func snapshotDirectory(root string, store core.BlockStore, blockSize int) ([]met
 		if !info.Mode().IsRegular() {
 			return nil
 		}
+		
+		relSlash := filepath.ToSlash(rel)
+		if headFiles != nil {
+			if hf, ok := headFiles[relSlash]; ok {
+				if hf.Size == info.Size() && hf.ModTime == info.ModTime().Unix() && hf.Mode == uint32(info.Mode().Perm()) {
+					files = append(files, hf)
+					return nil
+				}
+			}
+		}
 
-		blocks, size, err := putFileBlocks(p, store, blockSize)
-		if err != nil {
-			return err
+		blocks, size, perr := putFileBlocks(p, store, blockSize)
+		if perr != nil {
+			return perr
 		}
 		if blocks == nil && size == 0 {
-			return nil // skipped due to ENOENT in putFileBlocks
+			return nil // skipped due to ENOENT
 		}
-		files = append(files, meta.FileEntry{Path: filepath.ToSlash(rel), Mode: uint32(info.Mode().Perm()), Size: size, ModTime: info.ModTime().Unix(), Blocks: blocks})
+		files = append(files, meta.FileEntry{Path: relSlash, Mode: uint32(info.Mode().Perm()), Size: size, ModTime: info.ModTime().Unix(), Blocks: blocks})
 		return nil
 	})
 	if err != nil {
