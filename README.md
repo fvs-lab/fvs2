@@ -16,8 +16,7 @@ for a restore. No special filesystem, no server, a single Go binary.
 > committed state can be *fused* into your filesystem via FUSE (`mount`), with no
 > restore step. The name is the pitch.
 
-<!-- TODO: replace with the demo gif -->
-<!-- ![FVS demo](docs/demo.gif) -->
+![FVS demo](docs/demo.gif)
 
 ## Why it exists
 
