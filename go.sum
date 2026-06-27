@@ -1,9 +1,9 @@
 github.com/klauspost/cpuid/v2 v2.0.12 h1:p9dKCg8i4gmOxtv35DvrYoWqYzQrvEVdjQ762Y0OqZE=
 github.com/klauspost/cpuid/v2 v2.0.12/go.mod h1:g2LTdtYhdyuGPqyWyv7qRAmj1WBqxuObKfj5c0PQa7c=
-github.com/mirkobrombin/go-cli-builder/v2 v2.0.5 h1:ASWEhdH5sPUVVQ9OC/1uuDLPvglBqy8JMcw0YojvSIo=
-github.com/mirkobrombin/go-cli-builder/v2 v2.0.5/go.mod h1:jqg09VyejIcNMrGSz4zflb1VO1dOZ6h4hKfmGkXv110=
-github.com/mirkobrombin/go-foundation v0.2.0 h1:Omfr/ejTus5PCAeiq4tTc3LKzAytnTvuMBeIDfcofTU=
-github.com/mirkobrombin/go-foundation v0.2.0/go.mod h1:ScQBotKzuC5Lxi61Wyw0h8NaeGKsuwp4xHwPj5Mj9DY=
+github.com/mirkobrombin/go-cli-builder/v2 v2.2.1 h1:kw26fUMqeLHyoKJSfRGxU0jt3cVEmIwXoHVe0xIdWVE=
+github.com/mirkobrombin/go-cli-builder/v2 v2.2.1/go.mod h1:uKkhvl7B9+kyw2I/T464y+e98WHip2Wz3GqgMPDDbf8=
+github.com/mirkobrombin/go-foundation v1.0.0 h1:tTeH3WR2DesGstOBi2+uZC4zyRDJJcegU3b2ciSyQZQ=
+github.com/mirkobrombin/go-foundation v1.0.0/go.mod h1:ScQBotKzuC5Lxi61Wyw0h8NaeGKsuwp4xHwPj5Mj9DY=
 github.com/zeebo/assert v1.1.0 h1:hU1L1vLTHsnO8x8c9KAR5GmM5QscxHg5RNU5z5qbUWY=
 github.com/zeebo/assert v1.1.0/go.mod h1:Pq9JiuJQpG8JLJdtkwrJESF0Foym2/D9XMU5ciN/wJ0=
 github.com/zeebo/blake3 v0.2.4 h1:KYQPkhpRtcqh0ssGYcKLG1JYvddkEA8QwCM/yBqhaZI=
