@@ -70,9 +70,10 @@ func (c *InitCmd) Run() error {
 }
 
 type CommitCmd struct {
-	Message string `cli:"message,m" help:"commit message"`
-	Verbose bool   `cli:"verbose,v" help:"print verbose logs"`
-	Root    *CLI   `internal:"ignore"`
+	Message    string `cli:"message,m" help:"commit message"`
+	Verbose    bool   `cli:"verbose,v" help:"print verbose logs"`
+	AllowEmpty bool   `cli:"allow-empty" help:"create a state even if nothing changed"`
+	Root       *CLI   `internal:"ignore"`
 }
 
 func (c *CommitCmd) Run() error {
@@ -104,6 +105,10 @@ func (c *CommitCmd) Run() error {
 	files, err := snapshotDirectory(root, store, cfg.BlockSize, headFiles, c.Verbose)
 	if err != nil {
 		return err
+	}
+	if !c.AllowEmpty && headCommit != "" && sameFileSet(headFiles, files) {
+		fmt.Fprintln(os.Stdout, "nothing to commit, working tree clean")
+		return nil
 	}
 	now := time.Now().UTC()
 	id := meta.NewCommitID(now, c.Message, files)
@@ -154,6 +159,7 @@ type RestoreCmd struct {
 	State   string `cli:"state,s" required:"true" help:"state id (full or prefix)"`
 	To      string `cli:"to" help:"restore destination (default: --path)"`
 	Reset   bool   `cli:"reset" help:"reset HEAD to the restored commit"`
+	Clean   bool   `cli:"clean" help:"remove files in the destination that are not in the state (exact checkout)"`
 	Verbose bool   `cli:"verbose,v" help:"print verbose logs"`
 	Root    *CLI   `internal:"ignore"`
 }
@@ -185,6 +191,11 @@ func (c *RestoreCmd) Run() error {
 	}
 	if err := restoreCommit(dest, store, commit, c.Verbose); err != nil {
 		return err
+	}
+	if c.Clean {
+		if err := cleanDest(dest, commit, c.Verbose); err != nil {
+			return err
+		}
 	}
 	if c.Reset {
 		if err := meta.AdvanceHeadAfterCommit(root, id); err != nil {
@@ -412,6 +423,11 @@ func absClean(p string) (string, error) {
 	return filepath.Clean(a), nil
 }
 
+// errFileVanished signals that a file disappeared between directory walk and
+// open (a benign race). It is distinct from a legitimately empty file, which
+// must still be recorded.
+var errFileVanished = errors.New("file vanished")
+
 func snapshotDirectory(root string, store core.BlockStore, blockSize int, headFiles map[string]meta.FileEntry, verbose bool) ([]meta.FileEntry, error) {
 	var files []meta.FileEntry
 
@@ -436,8 +452,24 @@ func snapshotDirectory(root string, store core.BlockStore, blockSize int, headFi
 			}
 			return nil
 		}
+		relSlash := filepath.ToSlash(rel)
+
 		if d.Type()&os.ModeSymlink != 0 {
-			// v0: ignore symlinks
+			target, lerr := os.Readlink(p)
+			if lerr != nil {
+				if os.IsNotExist(lerr) {
+					return nil
+				}
+				return lerr
+			}
+			li, lerr := os.Lstat(p)
+			if lerr != nil {
+				if os.IsNotExist(lerr) {
+					return nil
+				}
+				return lerr
+			}
+			files = append(files, meta.FileEntry{Path: relSlash, Mode: uint32(li.Mode().Perm()), ModTime: li.ModTime().Unix(), Link: target})
 			return nil
 		}
 		if d.IsDir() {
@@ -453,11 +485,10 @@ func snapshotDirectory(root string, store core.BlockStore, blockSize int, headFi
 		if !info.Mode().IsRegular() {
 			return nil
 		}
-		
-		relSlash := filepath.ToSlash(rel)
+
 		if headFiles != nil {
 			if hf, ok := headFiles[relSlash]; ok {
-				if hf.Size == info.Size() && hf.ModTime == info.ModTime().Unix() && hf.Mode == uint32(info.Mode().Perm()) {
+				if hf.Link == "" && hf.Size == info.Size() && hf.ModTime == info.ModTime().Unix() && hf.Mode == uint32(info.Mode().Perm()) {
 					files = append(files, hf)
 					return nil
 				}
@@ -470,11 +501,13 @@ func snapshotDirectory(root string, store core.BlockStore, blockSize int, headFi
 
 		blocks, size, perr := putFileBlocks(p, store, blockSize)
 		if perr != nil {
+			if errors.Is(perr, errFileVanished) {
+				return nil
+			}
 			return perr
 		}
-		if blocks == nil && size == 0 {
-			return nil // skipped due to ENOENT
-		}
+		// Empty files (size 0, no blocks) are still recorded so they survive
+		// a commit/restore round-trip.
 		files = append(files, meta.FileEntry{Path: relSlash, Mode: uint32(info.Mode().Perm()), Size: size, ModTime: info.ModTime().Unix(), Blocks: blocks})
 		return nil
 	})
@@ -489,7 +522,7 @@ func putFileBlocks(path string, store core.BlockStore, blockSize int) ([]core.Bl
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, 0, nil // skip successfully
+			return nil, 0, errFileVanished
 		}
 		return nil, 0, err
 	}
@@ -554,10 +587,28 @@ func restoreCommit(dest string, store core.BlockStore, c meta.Commit, verbose bo
 			fmt.Printf("restoring: %s\n", fe.Path)
 		}
 
-		if info, err := os.Stat(outPath); err == nil {
-			if info.Size() == fe.Size && uint32(info.Mode().Perm()) == fe.Mode && info.ModTime().Unix() == fe.ModTime {
+		if fe.Link != "" {
+			if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+				return err
+			}
+			if cur, err := os.Readlink(outPath); err == nil && cur == fe.Link {
+				continue
+			}
+			_ = os.Remove(outPath)
+			if err := os.Symlink(fe.Link, outPath); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if info, err := os.Lstat(outPath); err == nil {
+			if info.Mode().IsRegular() && info.Size() == fe.Size && uint32(info.Mode().Perm()) == fe.Mode && info.ModTime().Unix() == fe.ModTime {
 				// Skip if metadata matches
 				continue
+			}
+			// A non-regular file (e.g. a stale symlink) occupies the path: drop it.
+			if !info.Mode().IsRegular() {
+				_ = os.Remove(outPath)
 			}
 		}
 
@@ -594,6 +645,72 @@ func restoreCommit(dest string, store core.BlockStore, c meta.Commit, verbose bo
 		}
 		// Set mod time to allow future fast skips
 		_ = os.Chtimes(outPath, time.Now(), time.Unix(fe.ModTime, 0))
+	}
+	return nil
+}
+
+// cleanDest removes any file or symlink under dest that is not part of the
+// restored commit, then prunes the directories left empty. The .fvs2 metadata
+// directory is always preserved. This turns restore into an exact checkout.
+func cleanDest(dest string, c meta.Commit, verbose bool) error {
+	want := make(map[string]bool, len(c.Files))
+	for _, fe := range c.Files {
+		want[filepath.Clean(filepath.Join(dest, filepath.FromSlash(fe.Path)))] = true
+	}
+	metaPath := filepath.Join(dest, ".fvs2")
+
+	var toRemove []string
+	err := filepath.WalkDir(dest, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		clean := filepath.Clean(p)
+		if clean == metaPath || strings.HasPrefix(clean, metaPath+string(os.PathSeparator)) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if clean == filepath.Clean(dest) || d.IsDir() {
+			return nil
+		}
+		if !want[clean] {
+			toRemove = append(toRemove, clean)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, p := range toRemove {
+		if verbose {
+			fmt.Printf("removing: %s\n", p)
+		}
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	// Prune now-empty directories (deepest first), never touching .fvs2.
+	var dirs []string
+	_ = filepath.WalkDir(dest, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		clean := filepath.Clean(p)
+		if clean == metaPath {
+			return filepath.SkipDir
+		}
+		if d.IsDir() && clean != filepath.Clean(dest) {
+			dirs = append(dirs, clean)
+		}
+		return nil
+	})
+	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err == nil && len(entries) == 0 {
+			_ = os.Remove(dir)
+		}
 	}
 	return nil
 }
@@ -718,7 +835,7 @@ func computeDirty(root, headCommit string) (bool, int, error) {
 			changed++
 			continue
 		}
-		if w.Size != g.Size || w.Mode != g.Mode || !equalBlocksBlockIDs(w.Blocks, g.Blocks) {
+		if w.Size != g.Size || w.Mode != g.Mode || w.Link != g.Link || !equalBlocksBlockIDs(w.Blocks, g.Blocks) {
 			changed++
 		}
 	}
@@ -728,6 +845,33 @@ func computeDirty(root, headCommit string) (bool, int, error) {
 		}
 	}
 	return changed != 0, changed, nil
+}
+
+// sameFileSet reports whether the freshly snapshotted files are identical, in
+// content, to the HEAD commit's files. ModTime is intentionally ignored so a
+// touched-but-unchanged file does not count as a change.
+func sameFileSet(head map[string]meta.FileEntry, files []meta.FileEntry) bool {
+	if len(head) != len(files) {
+		return false
+	}
+	for _, f := range files {
+		h, ok := head[f.Path]
+		if !ok {
+			return false
+		}
+		if h.Mode != f.Mode || h.Size != f.Size || h.Link != f.Link {
+			return false
+		}
+		if len(h.Blocks) != len(f.Blocks) {
+			return false
+		}
+		for i := range f.Blocks {
+			if h.Blocks[i] != f.Blocks[i] {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func equalBlocksBlockIDs(a []core.BlockID, b []string) bool {
@@ -748,6 +892,7 @@ type snapEntry struct {
 	Size    int64
 	ModTime int64
 	Blocks  []string
+	Link    string
 }
 
 func snapshotIDs(root string, blockSize int) (map[string]snapEntry, error) {
@@ -757,12 +902,16 @@ func snapshotIDs(root string, blockSize int) (map[string]snapEntry, error) {
 		return nil, err
 	}
 	for _, f := range files {
+		if f.Link != "" {
+			out[f.Path] = snapEntry{Path: f.Path, Mode: f.Mode, ModTime: f.ModTime, Link: f.Link}
+			continue
+		}
 		blocks, size, err := hashFileBlocks(filepath.Join(root, filepath.FromSlash(f.Path)), blockSize)
 		if err != nil {
+			if errors.Is(err, errFileVanished) {
+				continue
+			}
 			return nil, err
-		}
-		if blocks == nil && size == 0 {
-			continue // skipped due to ENOENT in hashFileBlocks
 		}
 		out[f.Path] = snapEntry{Path: f.Path, Mode: f.Mode, Size: size, ModTime: f.ModTime, Blocks: blocks}
 	}
@@ -789,6 +938,21 @@ func snapshotDirectoryNoStore(root string) ([]meta.FileEntry, error) {
 			return nil
 		}
 		if d.Type()&os.ModeSymlink != 0 {
+			target, lerr := os.Readlink(p)
+			if lerr != nil {
+				if os.IsNotExist(lerr) {
+					return nil
+				}
+				return lerr
+			}
+			li, lerr := os.Lstat(p)
+			if lerr != nil {
+				if os.IsNotExist(lerr) {
+					return nil
+				}
+				return lerr
+			}
+			files = append(files, meta.FileEntry{Path: filepath.ToSlash(rel), Mode: uint32(li.Mode().Perm()), ModTime: li.ModTime().Unix(), Link: target})
 			return nil
 		}
 		if d.IsDir() {
@@ -818,7 +982,7 @@ func hashFileBlocks(path string, blockSize int) ([]string, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, 0, nil // skip successfully
+			return nil, 0, errFileVanished
 		}
 		return nil, 0, err
 	}

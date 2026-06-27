@@ -43,6 +43,9 @@ type FileEntry struct {
 	Size    int64          `json:"size"`
 	ModTime int64          `json:"mod_time"`
 	Blocks  []core.BlockID `json:"blocks"`
+	// Link is the target of a symbolic link. When non-empty the entry
+	// represents a symlink (not a regular file) and Blocks is empty.
+	Link string `json:"link,omitempty"`
 }
 
 var ErrNotInitialized = errors.New("repo not initialized (run: fvs2 init)")
@@ -182,6 +185,9 @@ func NewCommitID(t time.Time, message string, files []FileEntry) string {
 	for _, f := range files {
 		_, _ = h.Write([]byte("\n" + f.Path))
 		_, _ = h.Write([]byte(fmt.Sprintf("\n%d\n%d", f.Mode, f.Size)))
+		if f.Link != "" {
+			_, _ = h.Write([]byte("\nlink:" + f.Link))
+		}
 		for _, b := range f.Blocks {
 			_, _ = h.Write([]byte(string(b)))
 		}
