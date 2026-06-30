@@ -123,6 +123,14 @@ CGO_ENABLED=1 go build -tags fuse3 -o ./bin/fvs2d ./cmd/fvs2d
 ./bin/fvs2d -repo /path/to/repo -state 1f0247 -mount /mnt/state
 ```
 
+Or let the `fvs2` CLI manage it: `mount` spawns `fvs2d` and waits until it is
+ready, `unmount` stops it. Both talk to the daemon over its gRPC control API.
+
+```bash
+fvs2 --path /path/to/repo mount --fvs2d ./bin/fvs2d --readonly main /mnt/state
+fvs2 unmount /mnt/state
+```
+
 The mounted tree mirrors the committed state (nested directories, symlinks,
 empty files). Blocks are fetched on demand from the content-addressed store and
 verified on read.
@@ -143,8 +151,7 @@ is the single biggest lever for dedup quality.
 
 Also planned:
 
-- integrated `fvs mount` (today the daemon is driven directly via `fvs2d`).
-- writable mounts and garbage collection / refcounting in the block store.
+- garbage collection / refcounting in the block store.
 
 Contributions are very welcome, especially on CDC and the mount workflow.
 

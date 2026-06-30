@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -32,8 +31,8 @@ type CLI struct {
 	Branch   BranchCmd   `cmd:"branch" help:"Manage branches"`
 	Checkout CheckoutCmd `cmd:"checkout" help:"Update HEAD to a branch or a commit (detached)"`
 	Status   StatusCmd   `cmd:"status" help:"Show HEAD, active branch, and dirty state"`
-	Mount    MountCmd    `cmd:"mount" help:"Ask fvs2d (IPC) to mount a branch"`
-	Unmount  UnmountCmd  `cmd:"unmount" help:"Ask fvs2d (IPC) to unmount a mountpoint"`
+	Mount    MountCmd    `cmd:"mount" help:"Spawn fvs2d to mount a branch (gRPC control)"`
+	Unmount  UnmountCmd  `cmd:"unmount" help:"Ask fvs2d over gRPC to unmount and exit"`
 
 	clibuilder.Base
 }
@@ -49,6 +48,8 @@ func (c *CLI) Before() error {
 	c.Branch.Delete.Root = c
 	c.Checkout.Root = c
 	c.Status.Root = c
+	c.Mount.Root = c
+	c.Unmount.Root = c
 	return nil
 }
 
@@ -347,52 +348,81 @@ func (c *StatusCmd) Run() error {
 }
 
 type MountCmd struct {
-	Socket   string `cli:"socket" help:"unix socket path"`
-	Readonly bool   `cli:"readonly" help:"mount read-only"`
+	Socket   string `cli:"socket" help:"control socket path (default: derived from mountpoint)"`
+	Fvs2d    string `cli:"fvs2d" default:"fvs2d" help:"path to the fvs2d daemon binary"`
+	Upper    string `cli:"upper" help:"writable upper layer dir (enables writes)"`
+	Readonly bool   `cli:"readonly" help:"mount read-only (no upper layer)"`
 	Branch   string `arg:"" required:"true" help:"branch"`
-	Path     string `arg:"" required:"true" help:"path"`
-}
-
-func (c *MountCmd) Before() error {
-	if c.Socket == "" {
-		c.Socket = defaultSocketPath()
-	}
-	return nil
+	Path     string `arg:"" required:"true" help:"mountpoint"`
+	Root     *CLI   `internal:"ignore"`
 }
 
 func (c *MountCmd) Run() error {
-	resp, err := callIPC(c.Socket, rpcReq{ID: "1", Method: "Mount", Params: map[string]any{"branch": c.Branch, "mountpoint": c.Path, "readonly": c.Readonly}})
+	repo, err := absClean(c.Root.Path)
 	if err != nil {
 		return err
 	}
-	if !resp.Ok {
-		return fmt.Errorf("ipc error: %d %s", resp.Error.Code, resp.Error.Message)
+	mp, err := filepath.Abs(c.Path)
+	if err != nil {
+		return err
 	}
-	fmt.Fprintln(os.Stdout, "ok")
+
+	sock := c.Socket
+	if sock == "" {
+		sock, err = socketForMount(mp)
+		if err != nil {
+			return err
+		}
+	}
+
+	if err := os.MkdirAll(mp, 0o755); err != nil {
+		return fmt.Errorf("create mountpoint: %w", err)
+	}
+
+	args := []string{"-repo", repo, "-mount", mp, "-control", "unix:" + sock}
+	if c.Branch != "" {
+		args = append(args, "-branch", c.Branch)
+	}
+	if c.Upper != "" {
+		upper, uerr := filepath.Abs(c.Upper)
+		if uerr != nil {
+			return uerr
+		}
+		args = append(args, "-upper", upper)
+	} else if !c.Readonly {
+		return fmt.Errorf("a writable mount requires --upper <dir>; pass --readonly for a read-only mount")
+	}
+
+	if err := spawnDaemon(c.Fvs2d, args, sock, 30*time.Second); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "ok: mounted %s (control %s)\n", mp, sock)
 	return nil
 }
 
 type UnmountCmd struct {
-	Socket string `cli:"socket" help:"unix socket path"`
-	Path   string `arg:"" required:"true" help:"path"`
-}
-
-func (c *UnmountCmd) Before() error {
-	if c.Socket == "" {
-		c.Socket = defaultSocketPath()
-	}
-	return nil
+	Socket string `cli:"socket" help:"control socket path (default: derived from mountpoint)"`
+	Lazy   bool   `cli:"lazy" help:"detach even if the mountpoint is still busy"`
+	Path   string `arg:"" required:"true" help:"mountpoint"`
+	Root   *CLI   `internal:"ignore"`
 }
 
 func (c *UnmountCmd) Run() error {
-	resp, err := callIPC(c.Socket, rpcReq{ID: "1", Method: "Unmount", Params: map[string]any{"mountpoint": c.Path}})
+	mp, err := filepath.Abs(c.Path)
 	if err != nil {
 		return err
 	}
-	if !resp.Ok {
-		return fmt.Errorf("ipc error: %d %s", resp.Error.Code, resp.Error.Message)
+	sock := c.Socket
+	if sock == "" {
+		sock, err = socketForMount(mp)
+		if err != nil {
+			return err
+		}
 	}
-	fmt.Fprintln(os.Stdout, "ok")
+	if err := shutdownDaemon(sock, c.Lazy); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "ok: unmounted %s\n", mp)
 	return nil
 }
 
@@ -746,63 +776,6 @@ func writeJSONAtomic(path string, v any) error {
 	}
 	ok = true
 	return nil
-}
-
-type rpcReq struct {
-	ID     string      `json:"id"`
-	Method string      `json:"method"`
-	Params interface{} `json:"params"`
-}
-
-type rpcResp struct {
-	Ok     bool            `json:"ok"`
-	ID     string          `json:"id"`
-	Result json.RawMessage `json:"result"`
-	Error  *struct {
-		Code    int             `json:"code"`
-		Message string          `json:"message"`
-		Details json.RawMessage `json:"details"`
-	} `json:"error"`
-}
-
-func defaultSocketPath() string {
-	if x := os.Getenv("XDG_RUNTIME_DIR"); x != "" {
-		return filepath.Join(x, "fvs2d.sock")
-	}
-	return "/tmp/fvs2d.sock"
-}
-
-func callIPC(sock string, req rpcReq) (rpcResp, error) {
-	c, err := net.Dial("unix", sock)
-	if err != nil {
-		return rpcResp{}, err
-	}
-	defer c.Close()
-	enc := json.NewEncoder(c)
-	if err := enc.Encode(req); err != nil {
-		return rpcResp{}, err
-	}
-	r := bufio.NewReader(c)
-	line, err := r.ReadBytes('\n')
-	if err != nil {
-		return rpcResp{}, err
-	}
-	var resp rpcResp
-	if err := json.Unmarshal(bytesTrimSpace(line), &resp); err != nil {
-		return rpcResp{}, err
-	}
-	if resp.Error == nil {
-		resp.Error = &struct {
-			Code    int             `json:"code"`
-			Message string          `json:"message"`
-			Details json.RawMessage `json:"details"`
-		}{Code: 0, Message: ""}
-	}
-	return resp, nil
-}
-
-func bytesTrimSpace(b []byte) []byte {
-	return []byte(strings.TrimSpace(string(b)))
 }
 
 func computeDirty(root, headCommit string) (bool, int, error) {
