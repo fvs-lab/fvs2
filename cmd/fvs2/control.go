@@ -15,6 +15,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	pb "fvs2/internal/controlpb"
 )
@@ -82,13 +83,13 @@ func spawnDaemon(bin string, args []string, sock string, timeout time.Duration) 
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		client, conn, derr := dialControl(sock)
+		_, conn, derr := dialControl(sock)
 		if derr == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-			resp, herr := client.Health(ctx, &pb.HealthRequest{})
+			hr, herr := healthpb.NewHealthClient(conn).Check(ctx, &healthpb.HealthCheckRequest{})
 			cancel()
 			conn.Close()
-			if herr == nil && resp.GetOk() {
+			if herr == nil && hr.GetStatus() == healthpb.HealthCheckResponse_SERVING {
 				return nil
 			}
 			lastErr = herr
@@ -112,12 +113,8 @@ func shutdownDaemon(sock string, lazy bool) error {
 	defer conn.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	resp, err := client.Shutdown(ctx, &pb.ShutdownRequest{Lazy: lazy})
-	if err != nil {
+	if _, err := client.Shutdown(ctx, &pb.ShutdownRequest{Lazy: lazy}); err != nil {
 		return err
-	}
-	if !resp.GetOk() {
-		return fmt.Errorf("daemon reported shutdown failure")
 	}
 	return nil
 }

@@ -4,26 +4,20 @@ package fvs2d.control.v1;
 
 option go_package = "fvs2/internal/controlpb;controlpb";
 
+import "google/protobuf/empty.proto";
+
 // Control is the runtime control plane exposed by a running fvs2d daemon.
 //
 // It is served only when the daemon is started with the -control flag and lets
 // a supervisor (e.g. the fvs2 CLI or Bottles) introspect the mount and stop it
-// cleanly without relying on POSIX signals.
+// cleanly without relying on POSIX signals. Liveness is served by the standard
+// grpc.health.v1.Health service.
 service Control {
-  // Health is a liveness probe; ok is always true when the server answers.
-  rpc Health(HealthRequest) returns (HealthResponse);
-
   // GetStatus returns the current mount configuration and runtime info.
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
 
   // Shutdown unmounts the FUSE filesystem and terminates the daemon.
-  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
-}
-
-message HealthRequest {}
-
-message HealthResponse {
-  bool ok = 1;
+  rpc Shutdown(ShutdownRequest) returns (google.protobuf.Empty);
 }
 
 message GetStatusRequest {}
@@ -54,8 +48,4 @@ message GetStatusResponse {
 message ShutdownRequest {
   // lazy requests a lazy unmount (detach now, clean up when no longer busy).
   bool lazy = 1;
-}
-
-message ShutdownResponse {
-  bool ok = 1;
 }

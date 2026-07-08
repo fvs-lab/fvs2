@@ -11,6 +11,7 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -19,7 +20,6 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Control_Health_FullMethodName    = "/fvs2d.control.v1.Control/Health"
 	Control_GetStatus_FullMethodName = "/fvs2d.control.v1.Control/GetStatus"
 	Control_Shutdown_FullMethodName  = "/fvs2d.control.v1.Control/Shutdown"
 )
@@ -32,14 +32,13 @@ const (
 //
 // It is served only when the daemon is started with the -control flag and lets
 // a supervisor (e.g. the fvs2 CLI or Bottles) introspect the mount and stop it
-// cleanly without relying on POSIX signals.
+// cleanly without relying on POSIX signals. Liveness is served by the standard
+// grpc.health.v1.Health service.
 type ControlClient interface {
-	// Health is a liveness probe; ok is always true when the server answers.
-	Health(ctx context.Context, in *HealthRequest, opts ...grpc.CallOption) (*HealthResponse, error)
 	// GetStatus returns the current mount configuration and runtime info.
 	GetStatus(ctx context.Context, in *GetStatusRequest, opts ...grpc.CallOption) (*GetStatusResponse, error)
 	// Shutdown unmounts the FUSE filesystem and terminates the daemon.
-	Shutdown(ctx context.Context, in *ShutdownRequest, opts ...grpc.CallOption) (*ShutdownResponse, error)
+	Shutdown(ctx context.Context, in *ShutdownRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 }
 
 type controlClient struct {
@@ -48,16 +47,6 @@ type controlClient struct {
 
 func NewControlClient(cc grpc.ClientConnInterface) ControlClient {
 	return &controlClient{cc}
-}
-
-func (c *controlClient) Health(ctx context.Context, in *HealthRequest, opts ...grpc.CallOption) (*HealthResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(HealthResponse)
-	err := c.cc.Invoke(ctx, Control_Health_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 func (c *controlClient) GetStatus(ctx context.Context, in *GetStatusRequest, opts ...grpc.CallOption) (*GetStatusResponse, error) {
@@ -70,9 +59,9 @@ func (c *controlClient) GetStatus(ctx context.Context, in *GetStatusRequest, opt
 	return out, nil
 }
 
-func (c *controlClient) Shutdown(ctx context.Context, in *ShutdownRequest, opts ...grpc.CallOption) (*ShutdownResponse, error) {
+func (c *controlClient) Shutdown(ctx context.Context, in *ShutdownRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ShutdownResponse)
+	out := new(emptypb.Empty)
 	err := c.cc.Invoke(ctx, Control_Shutdown_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -88,14 +77,13 @@ func (c *controlClient) Shutdown(ctx context.Context, in *ShutdownRequest, opts 
 //
 // It is served only when the daemon is started with the -control flag and lets
 // a supervisor (e.g. the fvs2 CLI or Bottles) introspect the mount and stop it
-// cleanly without relying on POSIX signals.
+// cleanly without relying on POSIX signals. Liveness is served by the standard
+// grpc.health.v1.Health service.
 type ControlServer interface {
-	// Health is a liveness probe; ok is always true when the server answers.
-	Health(context.Context, *HealthRequest) (*HealthResponse, error)
 	// GetStatus returns the current mount configuration and runtime info.
 	GetStatus(context.Context, *GetStatusRequest) (*GetStatusResponse, error)
 	// Shutdown unmounts the FUSE filesystem and terminates the daemon.
-	Shutdown(context.Context, *ShutdownRequest) (*ShutdownResponse, error)
+	Shutdown(context.Context, *ShutdownRequest) (*emptypb.Empty, error)
 	mustEmbedUnimplementedControlServer()
 }
 
@@ -106,13 +94,10 @@ type ControlServer interface {
 // pointer dereference when methods are called.
 type UnimplementedControlServer struct{}
 
-func (UnimplementedControlServer) Health(context.Context, *HealthRequest) (*HealthResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method Health not implemented")
-}
 func (UnimplementedControlServer) GetStatus(context.Context, *GetStatusRequest) (*GetStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetStatus not implemented")
 }
-func (UnimplementedControlServer) Shutdown(context.Context, *ShutdownRequest) (*ShutdownResponse, error) {
+func (UnimplementedControlServer) Shutdown(context.Context, *ShutdownRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method Shutdown not implemented")
 }
 func (UnimplementedControlServer) mustEmbedUnimplementedControlServer() {}
@@ -134,24 +119,6 @@ func RegisterControlServer(s grpc.ServiceRegistrar, srv ControlServer) {
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&Control_ServiceDesc, srv)
-}
-
-func _Control_Health_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(HealthRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(ControlServer).Health(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: Control_Health_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ControlServer).Health(ctx, req.(*HealthRequest))
-	}
-	return interceptor(ctx, in, info, handler)
 }
 
 func _Control_GetStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -197,10 +164,6 @@ var Control_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "fvs2d.control.v1.Control",
 	HandlerType: (*ControlServer)(nil),
 	Methods: []grpc.MethodDesc{
-		{
-			MethodName: "Health",
-			Handler:    _Control_Health_Handler,
-		},
 		{
 			MethodName: "GetStatus",
 			Handler:    _Control_GetStatus_Handler,

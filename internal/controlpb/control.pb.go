@@ -9,6 +9,7 @@ package controlpb
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -21,86 +22,6 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type HealthRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *HealthRequest) Reset() {
-	*x = HealthRequest{}
-	mi := &file_control_proto_msgTypes[0]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *HealthRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*HealthRequest) ProtoMessage() {}
-
-func (x *HealthRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[0]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use HealthRequest.ProtoReflect.Descriptor instead.
-func (*HealthRequest) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{0}
-}
-
-type HealthResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Ok            bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *HealthResponse) Reset() {
-	*x = HealthResponse{}
-	mi := &file_control_proto_msgTypes[1]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *HealthResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*HealthResponse) ProtoMessage() {}
-
-func (x *HealthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[1]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use HealthResponse.ProtoReflect.Descriptor instead.
-func (*HealthResponse) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *HealthResponse) GetOk() bool {
-	if x != nil {
-		return x.Ok
-	}
-	return false
-}
-
 type GetStatusRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -109,7 +30,7 @@ type GetStatusRequest struct {
 
 func (x *GetStatusRequest) Reset() {
 	*x = GetStatusRequest{}
-	mi := &file_control_proto_msgTypes[2]
+	mi := &file_control_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -121,7 +42,7 @@ func (x *GetStatusRequest) String() string {
 func (*GetStatusRequest) ProtoMessage() {}
 
 func (x *GetStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[2]
+	mi := &file_control_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -134,7 +55,7 @@ func (x *GetStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetStatusRequest) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{2}
+	return file_control_proto_rawDescGZIP(), []int{0}
 }
 
 // Layer describes one lower layer selector of a stacked mount.
@@ -149,7 +70,7 @@ type Layer struct {
 
 func (x *Layer) Reset() {
 	*x = Layer{}
-	mi := &file_control_proto_msgTypes[3]
+	mi := &file_control_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -161,7 +82,7 @@ func (x *Layer) String() string {
 func (*Layer) ProtoMessage() {}
 
 func (x *Layer) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[3]
+	mi := &file_control_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -174,7 +95,7 @@ func (x *Layer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Layer.ProtoReflect.Descriptor instead.
 func (*Layer) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{3}
+	return file_control_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *Layer) GetRepo() string {
@@ -219,7 +140,7 @@ type GetStatusResponse struct {
 
 func (x *GetStatusResponse) Reset() {
 	*x = GetStatusResponse{}
-	mi := &file_control_proto_msgTypes[4]
+	mi := &file_control_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -231,7 +152,7 @@ func (x *GetStatusResponse) String() string {
 func (*GetStatusResponse) ProtoMessage() {}
 
 func (x *GetStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[4]
+	mi := &file_control_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -244,7 +165,7 @@ func (x *GetStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetStatusResponse) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{4}
+	return file_control_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *GetStatusResponse) GetMountpoint() string {
@@ -348,7 +269,7 @@ type ShutdownRequest struct {
 
 func (x *ShutdownRequest) Reset() {
 	*x = ShutdownRequest{}
-	mi := &file_control_proto_msgTypes[5]
+	mi := &file_control_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -360,7 +281,7 @@ func (x *ShutdownRequest) String() string {
 func (*ShutdownRequest) ProtoMessage() {}
 
 func (x *ShutdownRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[5]
+	mi := &file_control_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -373,7 +294,7 @@ func (x *ShutdownRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShutdownRequest.ProtoReflect.Descriptor instead.
 func (*ShutdownRequest) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{5}
+	return file_control_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ShutdownRequest) GetLazy() bool {
@@ -383,58 +304,11 @@ func (x *ShutdownRequest) GetLazy() bool {
 	return false
 }
 
-type ShutdownResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Ok            bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ShutdownResponse) Reset() {
-	*x = ShutdownResponse{}
-	mi := &file_control_proto_msgTypes[6]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ShutdownResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ShutdownResponse) ProtoMessage() {}
-
-func (x *ShutdownResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_control_proto_msgTypes[6]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ShutdownResponse.ProtoReflect.Descriptor instead.
-func (*ShutdownResponse) Descriptor() ([]byte, []int) {
-	return file_control_proto_rawDescGZIP(), []int{6}
-}
-
-func (x *ShutdownResponse) GetOk() bool {
-	if x != nil {
-		return x.Ok
-	}
-	return false
-}
-
 var File_control_proto protoreflect.FileDescriptor
 
 const file_control_proto_rawDesc = "" +
 	"\n" +
-	"\rcontrol.proto\x12\x10fvs2d.control.v1\"\x0f\n" +
-	"\rHealthRequest\" \n" +
-	"\x0eHealthResponse\x12\x0e\n" +
-	"\x02ok\x18\x01 \x01(\bR\x02ok\"\x12\n" +
+	"\rcontrol.proto\x12\x10fvs2d.control.v1\x1a\x1bgoogle/protobuf/empty.proto\"\x12\n" +
 	"\x10GetStatusRequest\"I\n" +
 	"\x05Layer\x12\x12\n" +
 	"\x04repo\x18\x01 \x01(\tR\x04repo\x12\x14\n" +
@@ -461,13 +335,10 @@ const file_control_proto_rawDesc = "" +
 	"\vapi_version\x18\r \x01(\tR\n" +
 	"apiVersion\"%\n" +
 	"\x0fShutdownRequest\x12\x12\n" +
-	"\x04lazy\x18\x01 \x01(\bR\x04lazy\"\"\n" +
-	"\x10ShutdownResponse\x12\x0e\n" +
-	"\x02ok\x18\x01 \x01(\bR\x02ok2\xff\x01\n" +
-	"\aControl\x12K\n" +
-	"\x06Health\x12\x1f.fvs2d.control.v1.HealthRequest\x1a .fvs2d.control.v1.HealthResponse\x12T\n" +
-	"\tGetStatus\x12\".fvs2d.control.v1.GetStatusRequest\x1a#.fvs2d.control.v1.GetStatusResponse\x12Q\n" +
-	"\bShutdown\x12!.fvs2d.control.v1.ShutdownRequest\x1a\".fvs2d.control.v1.ShutdownResponseB#Z!fvs2/internal/controlpb;controlpbb\x06proto3"
+	"\x04lazy\x18\x01 \x01(\bR\x04lazy2\xa6\x01\n" +
+	"\aControl\x12T\n" +
+	"\tGetStatus\x12\".fvs2d.control.v1.GetStatusRequest\x1a#.fvs2d.control.v1.GetStatusResponse\x12E\n" +
+	"\bShutdown\x12!.fvs2d.control.v1.ShutdownRequest\x1a\x16.google.protobuf.EmptyB#Z!fvs2/internal/controlpb;controlpbb\x06proto3"
 
 var (
 	file_control_proto_rawDescOnce sync.Once
@@ -481,26 +352,22 @@ func file_control_proto_rawDescGZIP() []byte {
 	return file_control_proto_rawDescData
 }
 
-var file_control_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_control_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_control_proto_goTypes = []any{
-	(*HealthRequest)(nil),     // 0: fvs2d.control.v1.HealthRequest
-	(*HealthResponse)(nil),    // 1: fvs2d.control.v1.HealthResponse
-	(*GetStatusRequest)(nil),  // 2: fvs2d.control.v1.GetStatusRequest
-	(*Layer)(nil),             // 3: fvs2d.control.v1.Layer
-	(*GetStatusResponse)(nil), // 4: fvs2d.control.v1.GetStatusResponse
-	(*ShutdownRequest)(nil),   // 5: fvs2d.control.v1.ShutdownRequest
-	(*ShutdownResponse)(nil),  // 6: fvs2d.control.v1.ShutdownResponse
+	(*GetStatusRequest)(nil),  // 0: fvs2d.control.v1.GetStatusRequest
+	(*Layer)(nil),             // 1: fvs2d.control.v1.Layer
+	(*GetStatusResponse)(nil), // 2: fvs2d.control.v1.GetStatusResponse
+	(*ShutdownRequest)(nil),   // 3: fvs2d.control.v1.ShutdownRequest
+	(*emptypb.Empty)(nil),     // 4: google.protobuf.Empty
 }
 var file_control_proto_depIdxs = []int32{
-	3, // 0: fvs2d.control.v1.GetStatusResponse.layers:type_name -> fvs2d.control.v1.Layer
-	0, // 1: fvs2d.control.v1.Control.Health:input_type -> fvs2d.control.v1.HealthRequest
-	2, // 2: fvs2d.control.v1.Control.GetStatus:input_type -> fvs2d.control.v1.GetStatusRequest
-	5, // 3: fvs2d.control.v1.Control.Shutdown:input_type -> fvs2d.control.v1.ShutdownRequest
-	1, // 4: fvs2d.control.v1.Control.Health:output_type -> fvs2d.control.v1.HealthResponse
-	4, // 5: fvs2d.control.v1.Control.GetStatus:output_type -> fvs2d.control.v1.GetStatusResponse
-	6, // 6: fvs2d.control.v1.Control.Shutdown:output_type -> fvs2d.control.v1.ShutdownResponse
-	4, // [4:7] is the sub-list for method output_type
-	1, // [1:4] is the sub-list for method input_type
+	1, // 0: fvs2d.control.v1.GetStatusResponse.layers:type_name -> fvs2d.control.v1.Layer
+	0, // 1: fvs2d.control.v1.Control.GetStatus:input_type -> fvs2d.control.v1.GetStatusRequest
+	3, // 2: fvs2d.control.v1.Control.Shutdown:input_type -> fvs2d.control.v1.ShutdownRequest
+	2, // 3: fvs2d.control.v1.Control.GetStatus:output_type -> fvs2d.control.v1.GetStatusResponse
+	4, // 4: fvs2d.control.v1.Control.Shutdown:output_type -> google.protobuf.Empty
+	3, // [3:5] is the sub-list for method output_type
+	1, // [1:3] is the sub-list for method input_type
 	1, // [1:1] is the sub-list for extension type_name
 	1, // [1:1] is the sub-list for extension extendee
 	0, // [0:1] is the sub-list for field type_name
@@ -517,7 +384,7 @@ func file_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_control_proto_rawDesc), len(file_control_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   7,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
