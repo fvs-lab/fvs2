@@ -33,3 +33,16 @@ func TestCommitCreatesRevisionAndSkipsNoop(t *testing.T) {
 		t.Fatalf("no-op commit = %+v, want state %s", second, first.StateID)
 	}
 }
+
+func TestInitIsIdempotent(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root, 8192); err != nil {
+		t.Fatal(err)
+	}
+	if repository, err := Init(root, 8192); err != nil || repository.BlockSize != 8192 {
+		t.Fatalf("retry = %+v, %v", repository, err)
+	}
+	if _, err := Init(root, 4096); err == nil {
+		t.Fatal("expected conflicting block size to fail")
+	}
+}

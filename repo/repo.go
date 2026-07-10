@@ -34,6 +34,14 @@ func Init(root string, blockSize int) (Repository, error) {
 	if err != nil {
 		return Repository{}, err
 	}
+	if cfg, err := meta.LoadConfig(root); err == nil {
+		if blockSize > 0 && blockSize != cfg.BlockSize {
+			return Repository{}, fmt.Errorf("repository already uses block size %d", cfg.BlockSize)
+		}
+		return Repository{Path: root, BlockSize: cfg.BlockSize}, nil
+	} else if !errors.Is(err, meta.ErrNotInitialized) {
+		return Repository{}, err
+	}
 	if err := meta.Init(root, blockSize); err != nil {
 		return Repository{}, err
 	}
