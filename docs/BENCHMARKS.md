@@ -58,8 +58,9 @@ Versions: fvs2 `24e6700`, restic 0.18.1, borg 1.4.4. Dataset 419,754,290 bytes.
 
 ## Reading the numbers
 
-- **Snapshots are consistently the fastest** (2-4x): the mtime/size shortcut
-  skips unchanged files entirely and only changed content is chunked.
+- **Incremental snapshots are the fastest** (2-4x): the mtime/size shortcut
+  skips unchanged files entirely and only changed content is chunked. The
+  initial snapshot, where every file is read, is on par with the others.
 - **Content-defined chunking works**: the 4 KiB insert in s3 stores well under
   1 MiB of new blocks instead of re-storing the shifted 127 MiB tail.
 - **Duplicate files cost zero block storage** (identical content hashes to the
