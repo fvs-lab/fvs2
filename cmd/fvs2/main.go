@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +15,7 @@ import (
 
 	core "fvs-v2-core"
 	"fvs2/internal/meta"
+	fvsrepo "fvs2/repo"
 
 	clibuilder "github.com/mirkobrombin/go-cli-builder/v2/pkg/cli"
 	"github.com/zeebo/blake3"
@@ -31,8 +31,6 @@ type CLI struct {
 	Branch   BranchCmd   `cmd:"branch" help:"Manage branches"`
 	Checkout CheckoutCmd `cmd:"checkout" help:"Update HEAD to a branch or a commit (detached)"`
 	Status   StatusCmd   `cmd:"status" help:"Show HEAD, active branch, and dirty state"`
-	Mount    MountCmd    `cmd:"mount" help:"Spawn fvs2d to mount a branch (gRPC control)"`
-	Unmount  UnmountCmd  `cmd:"unmount" help:"Ask fvs2d over gRPC to unmount and exit"`
 
 	clibuilder.Base
 }
@@ -48,8 +46,6 @@ func (c *CLI) Before() error {
 	c.Branch.Delete.Root = c
 	c.Checkout.Root = c
 	c.Status.Root = c
-	c.Mount.Root = c
-	c.Unmount.Root = c
 	return nil
 }
 
@@ -63,10 +59,11 @@ func (c *InitCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	if err := meta.Init(root, c.BlockSize); err != nil {
+	repository, err := fvsrepo.Init(root, c.BlockSize)
+	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "ok: initialized %s\n", root)
+	fmt.Fprintf(os.Stdout, "ok: initialized %s\n", repository.Path)
 	return nil
 }
 
@@ -82,48 +79,19 @@ func (c *CommitCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	cfg, err := meta.LoadConfig(root)
+	var verbose io.Writer
+	if c.Verbose {
+		verbose = os.Stdout
+	}
+	result, err := fvsrepo.Commit(root, c.Message, c.AllowEmpty, verbose)
 	if err != nil {
 		return err
 	}
-	store, err := meta.NewBlockStore(root)
-	if err != nil {
-		return err
-	}
-
-	var headFiles map[string]meta.FileEntry
-	headCommit, _ := meta.ResolveHeadCommit(root)
-	if headCommit != "" {
-		hc, err := meta.LoadCommit(root, headCommit)
-		if err == nil {
-			headFiles = make(map[string]meta.FileEntry, len(hc.Files))
-			for _, f := range hc.Files {
-				headFiles[f.Path] = f
-			}
-		}
-	}
-
-	files, err := snapshotDirectory(root, store, cfg.BlockSize, headFiles, c.Verbose)
-	if err != nil {
-		return err
-	}
-	if !c.AllowEmpty && headCommit != "" && sameFileSet(headFiles, files) {
+	if !result.Created {
 		fmt.Fprintln(os.Stdout, "nothing to commit, working tree clean")
 		return nil
 	}
-	now := time.Now().UTC()
-	id := meta.NewCommitID(now, c.Message, files)
-	commit := meta.Commit{ID: id, TimeUTC: now.Unix(), Message: c.Message, BlockSize: cfg.BlockSize, Files: files}
-	if err := writeCommit(root, commit); err != nil {
-		return err
-	}
-	if err := appendIndex(root, meta.CommitSummary{ID: id, TimeUTC: commit.TimeUTC, Message: c.Message}); err != nil {
-		return err
-	}
-	if err := meta.AdvanceHeadAfterCommit(root, id); err != nil {
-		return err
-	}
-	fmt.Fprintf(os.Stdout, "ok: commit %s (%d files)\n", id[:12], len(files))
+	fmt.Fprintf(os.Stdout, "ok: commit %s (%d files)\n", result.StateID[:12], result.FileCount)
 	return nil
 }
 
@@ -347,85 +315,6 @@ func (c *StatusCmd) Run() error {
 	return nil
 }
 
-type MountCmd struct {
-	Socket   string `cli:"socket" help:"control socket path (default: derived from mountpoint)"`
-	Fvs2d    string `cli:"fvs2d" default:"fvs2d" help:"path to the fvs2d daemon binary"`
-	Upper    string `cli:"upper" help:"writable upper layer dir (enables writes)"`
-	Readonly bool   `cli:"readonly" help:"mount read-only (no upper layer)"`
-	Branch   string `arg:"" required:"true" help:"branch"`
-	Path     string `arg:"" required:"true" help:"mountpoint"`
-	Root     *CLI   `internal:"ignore"`
-}
-
-func (c *MountCmd) Run() error {
-	repo, err := absClean(c.Root.Path)
-	if err != nil {
-		return err
-	}
-	mp, err := filepath.Abs(c.Path)
-	if err != nil {
-		return err
-	}
-
-	sock := c.Socket
-	if sock == "" {
-		sock, err = socketForMount(mp)
-		if err != nil {
-			return err
-		}
-	}
-
-	if err := os.MkdirAll(mp, 0o755); err != nil {
-		return fmt.Errorf("create mountpoint: %w", err)
-	}
-
-	args := []string{"-repo", repo, "-mount", mp, "-control", "unix:" + sock}
-	if c.Branch != "" {
-		args = append(args, "-branch", c.Branch)
-	}
-	if c.Upper != "" {
-		upper, uerr := filepath.Abs(c.Upper)
-		if uerr != nil {
-			return uerr
-		}
-		args = append(args, "-upper", upper)
-	} else if !c.Readonly {
-		return fmt.Errorf("a writable mount requires --upper <dir>; pass --readonly for a read-only mount")
-	}
-
-	if err := spawnDaemon(c.Fvs2d, args, sock, 30*time.Second); err != nil {
-		return err
-	}
-	fmt.Fprintf(os.Stdout, "ok: mounted %s (control %s)\n", mp, sock)
-	return nil
-}
-
-type UnmountCmd struct {
-	Socket string `cli:"socket" help:"control socket path (default: derived from mountpoint)"`
-	Lazy   bool   `cli:"lazy" help:"detach even if the mountpoint is still busy"`
-	Path   string `arg:"" required:"true" help:"mountpoint"`
-	Root   *CLI   `internal:"ignore"`
-}
-
-func (c *UnmountCmd) Run() error {
-	mp, err := filepath.Abs(c.Path)
-	if err != nil {
-		return err
-	}
-	sock := c.Socket
-	if sock == "" {
-		sock, err = socketForMount(mp)
-		if err != nil {
-			return err
-		}
-	}
-	if err := shutdownDaemon(sock, c.Lazy); err != nil {
-		return err
-	}
-	fmt.Fprintf(os.Stdout, "ok: unmounted %s\n", mp)
-	return nil
-}
-
 func main() {
 	app := &CLI{}
 	a, err := clibuilder.New(app)
@@ -457,154 +346,6 @@ func absClean(p string) (string, error) {
 // open (a benign race). It is distinct from a legitimately empty file, which
 // must still be recorded.
 var errFileVanished = errors.New("file vanished")
-
-func snapshotDirectory(root string, store core.BlockStore, blockSize int, headFiles map[string]meta.FileEntry, verbose bool) ([]meta.FileEntry, error) {
-	var files []meta.FileEntry
-
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			if os.IsNotExist(walkErr) {
-				return nil
-			}
-			return walkErr
-		}
-		rel, err := filepath.Rel(root, p)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			return nil
-		}
-		// never snapshot internal metadata
-		if rel == ".fvs2" || strings.HasPrefix(rel, ".fvs2"+string(os.PathSeparator)) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		relSlash := filepath.ToSlash(rel)
-
-		if d.Type()&os.ModeSymlink != 0 {
-			target, lerr := os.Readlink(p)
-			if lerr != nil {
-				if os.IsNotExist(lerr) {
-					return nil
-				}
-				return lerr
-			}
-			li, lerr := os.Lstat(p)
-			if lerr != nil {
-				if os.IsNotExist(lerr) {
-					return nil
-				}
-				return lerr
-			}
-			files = append(files, meta.FileEntry{Path: relSlash, Mode: uint32(li.Mode().Perm()), ModTime: li.ModTime().Unix(), Link: target})
-			return nil
-		}
-		if d.IsDir() {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-
-		if headFiles != nil {
-			if hf, ok := headFiles[relSlash]; ok {
-				if hf.Link == "" && hf.Size == info.Size() && hf.ModTime == info.ModTime().Unix() && hf.Mode == uint32(info.Mode().Perm()) {
-					files = append(files, hf)
-					return nil
-				}
-			}
-		}
-
-		if verbose {
-			fmt.Printf("hashing: %s\n", relSlash)
-		}
-
-		blocks, size, perr := putFileBlocks(p, store, blockSize)
-		if perr != nil {
-			if errors.Is(perr, errFileVanished) {
-				return nil
-			}
-			return perr
-		}
-		// Empty files (size 0, no blocks) are still recorded so they survive
-		// a commit/restore round-trip.
-		files = append(files, meta.FileEntry{Path: relSlash, Mode: uint32(info.Mode().Perm()), Size: size, ModTime: info.ModTime().Unix(), Blocks: blocks})
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
-	return files, nil
-}
-
-func putFileBlocks(path string, store core.BlockStore, blockSize int) ([]core.BlockID, int64, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, 0, errFileVanished
-		}
-		return nil, 0, err
-	}
-	defer f.Close()
-
-	var out []core.BlockID
-	var total int64
-	br := bufio.NewReaderSize(f, blockSize)
-	buf := make([]byte, blockSize)
-
-	for {
-		n, err := io.ReadFull(br, buf)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			if errors.Is(err, io.ErrUnexpectedEOF) {
-				// last partial block
-				if n > 0 {
-					id, perr := store.Put(buf[:n])
-					if perr != nil {
-						return nil, 0, perr
-					}
-					out = append(out, id)
-					total += int64(n)
-				}
-				break
-			}
-			return nil, 0, err
-		}
-		id, err := store.Put(buf[:n])
-		if err != nil {
-			return nil, 0, err
-		}
-		out = append(out, id)
-		total += int64(n)
-	}
-	return out, total, nil
-}
-
-func writeCommit(root string, c meta.Commit) error {
-	return writeJSONAtomic(meta.CommitPath(root, c.ID), c)
-}
-
-func appendIndex(root string, sum meta.CommitSummary) error {
-	idx, err := meta.LoadIndex(root)
-	if err != nil {
-		return err
-	}
-	idx.Commits = append(idx.Commits, sum)
-	return meta.SaveIndex(root, idx)
-}
 
 func restoreCommit(dest string, store core.BlockStore, c meta.Commit, verbose bool) error {
 	for _, fe := range c.Files {
@@ -745,39 +486,6 @@ func cleanDest(dest string, c meta.Commit, verbose bool) error {
 	return nil
 }
 
-func writeJSONAtomic(path string, v any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	ok := false
-	defer func() {
-		_ = tmp.Close()
-		if !ok {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if _, err := tmp.Write(append(b, '\n')); err != nil {
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return err
-	}
-	ok = true
-	return nil
-}
-
 func computeDirty(root, headCommit string) (bool, int, error) {
 	// No head commit => treat as dirty if there are any files.
 	if headCommit == "" {
@@ -818,33 +526,6 @@ func computeDirty(root, headCommit string) (bool, int, error) {
 		}
 	}
 	return changed != 0, changed, nil
-}
-
-// sameFileSet reports whether the freshly snapshotted files are identical, in
-// content, to the HEAD commit's files. ModTime is intentionally ignored so a
-// touched-but-unchanged file does not count as a change.
-func sameFileSet(head map[string]meta.FileEntry, files []meta.FileEntry) bool {
-	if len(head) != len(files) {
-		return false
-	}
-	for _, f := range files {
-		h, ok := head[f.Path]
-		if !ok {
-			return false
-		}
-		if h.Mode != f.Mode || h.Size != f.Size || h.Link != f.Link {
-			return false
-		}
-		if len(h.Blocks) != len(f.Blocks) {
-			return false
-		}
-		for i := range f.Blocks {
-			if h.Blocks[i] != f.Blocks[i] {
-				return false
-			}
-		}
-	}
-	return true
 }
 
 func equalBlocksBlockIDs(a []core.BlockID, b []string) bool {
