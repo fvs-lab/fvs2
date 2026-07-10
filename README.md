@@ -107,13 +107,11 @@ Notes:
 
 ## Mounting a state
 
-Mounting exposes a committed state as a read-only filesystem through `fvs2d`
-(the FUSE daemon). Build it with the `fuse3` tag (requires `libfuse3-dev` and
-`pkg-config`):
+Mounting exposes committed states through the separate `fvs2d` FUSE daemon:
 
 ```bash
 # in the fvs2d repo
-CGO_ENABLED=1 go build -tags fuse3 -o ./bin/fvs2d ./cmd/fvs2d
+go build -o ./bin/fvs2d ./cmd/fvs2d
 
 # mount the current HEAD of a repo (read-only)
 ./bin/fvs2d -repo /path/to/repo -mount /mnt/state
@@ -123,13 +121,8 @@ CGO_ENABLED=1 go build -tags fuse3 -o ./bin/fvs2d ./cmd/fvs2d
 ./bin/fvs2d -repo /path/to/repo -state 1f0247 -mount /mnt/state
 ```
 
-Or let the `fvs2` CLI manage it: `mount` spawns `fvs2d` and waits until it is
-ready, `unmount` stops it. Both talk to the daemon over its gRPC control API.
-
-```bash
-fvs2 --path /path/to/repo mount --fvs2d ./bin/fvs2d --readonly main /mnt/state
-fvs2 unmount /mnt/state
-```
+For programmatic mount lifecycle, run `fvs2d` as a persistent gRPC manager;
+`fvs2` now handles repository operations only.
 
 The mounted tree mirrors the committed state (nested directories, symlinks,
 empty files). Blocks are fetched on demand from the content-addressed store and

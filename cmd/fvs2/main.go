@@ -31,8 +31,6 @@ type CLI struct {
 	Branch   BranchCmd   `cmd:"branch" help:"Manage branches"`
 	Checkout CheckoutCmd `cmd:"checkout" help:"Update HEAD to a branch or a commit (detached)"`
 	Status   StatusCmd   `cmd:"status" help:"Show HEAD, active branch, and dirty state"`
-	Mount    MountCmd    `cmd:"mount" help:"Spawn fvs2d to mount a branch (gRPC control)"`
-	Unmount  UnmountCmd  `cmd:"unmount" help:"Ask fvs2d over gRPC to unmount and exit"`
 
 	clibuilder.Base
 }
@@ -48,8 +46,6 @@ func (c *CLI) Before() error {
 	c.Branch.Delete.Root = c
 	c.Checkout.Root = c
 	c.Status.Root = c
-	c.Mount.Root = c
-	c.Unmount.Root = c
 	return nil
 }
 
@@ -344,85 +340,6 @@ func (c *StatusCmd) Run() error {
 	}
 	fmt.Fprintf(os.Stdout, "dirty=%v\n", dirty)
 	fmt.Fprintf(os.Stdout, "changed_files=%d\n", changed)
-	return nil
-}
-
-type MountCmd struct {
-	Socket   string `cli:"socket" help:"control socket path (default: derived from mountpoint)"`
-	Fvs2d    string `cli:"fvs2d" default:"fvs2d" help:"path to the fvs2d daemon binary"`
-	Upper    string `cli:"upper" help:"writable upper layer dir (enables writes)"`
-	Readonly bool   `cli:"readonly" help:"mount read-only (no upper layer)"`
-	Branch   string `arg:"" required:"true" help:"branch"`
-	Path     string `arg:"" required:"true" help:"mountpoint"`
-	Root     *CLI   `internal:"ignore"`
-}
-
-func (c *MountCmd) Run() error {
-	repo, err := absClean(c.Root.Path)
-	if err != nil {
-		return err
-	}
-	mp, err := filepath.Abs(c.Path)
-	if err != nil {
-		return err
-	}
-
-	sock := c.Socket
-	if sock == "" {
-		sock, err = socketForMount(mp)
-		if err != nil {
-			return err
-		}
-	}
-
-	if err := os.MkdirAll(mp, 0o755); err != nil {
-		return fmt.Errorf("create mountpoint: %w", err)
-	}
-
-	args := []string{"-repo", repo, "-mount", mp, "-control", "unix:" + sock}
-	if c.Branch != "" {
-		args = append(args, "-branch", c.Branch)
-	}
-	if c.Upper != "" {
-		upper, uerr := filepath.Abs(c.Upper)
-		if uerr != nil {
-			return uerr
-		}
-		args = append(args, "-upper", upper)
-	} else if !c.Readonly {
-		return fmt.Errorf("a writable mount requires --upper <dir>; pass --readonly for a read-only mount")
-	}
-
-	if err := spawnDaemon(c.Fvs2d, args, sock, 30*time.Second); err != nil {
-		return err
-	}
-	fmt.Fprintf(os.Stdout, "ok: mounted %s (control %s)\n", mp, sock)
-	return nil
-}
-
-type UnmountCmd struct {
-	Socket string `cli:"socket" help:"control socket path (default: derived from mountpoint)"`
-	Lazy   bool   `cli:"lazy" help:"detach even if the mountpoint is still busy"`
-	Path   string `arg:"" required:"true" help:"mountpoint"`
-	Root   *CLI   `internal:"ignore"`
-}
-
-func (c *UnmountCmd) Run() error {
-	mp, err := filepath.Abs(c.Path)
-	if err != nil {
-		return err
-	}
-	sock := c.Socket
-	if sock == "" {
-		sock, err = socketForMount(mp)
-		if err != nil {
-			return err
-		}
-	}
-	if err := shutdownDaemon(sock, c.Lazy); err != nil {
-		return err
-	}
-	fmt.Fprintf(os.Stdout, "ok: unmounted %s\n", mp)
 	return nil
 }
 
