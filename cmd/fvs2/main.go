@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -140,40 +138,20 @@ func (c *RestoreCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	id, err := meta.ResolveCommitID(root, c.State)
+	var verbose io.Writer
+	if c.Verbose {
+		verbose = os.Stdout
+	}
+	res, err := fvsrepo.Restore(root, c.State, fvsrepo.RestoreOptions{
+		To:      c.To,
+		Clean:   c.Clean,
+		Reset:   c.Reset,
+		Verbose: verbose,
+	})
 	if err != nil {
 		return err
 	}
-	commit, err := meta.LoadCommit(root, id)
-	if err != nil {
-		return err
-	}
-	store, err := meta.NewBlockStore(root)
-	if err != nil {
-		return err
-	}
-
-	dest := root
-	if c.To != "" {
-		dest, err = absClean(c.To)
-		if err != nil {
-			return err
-		}
-	}
-	if err := restoreCommit(dest, store, commit, c.Verbose); err != nil {
-		return err
-	}
-	if c.Clean {
-		if err := cleanDest(dest, commit, c.Verbose); err != nil {
-			return err
-		}
-	}
-	if c.Reset {
-		if err := meta.AdvanceHeadAfterCommit(root, id); err != nil {
-			return err
-		}
-	}
-	fmt.Fprintf(os.Stdout, "ok: restored %s into %s\n", id[:12], dest)
+	fmt.Fprintf(os.Stdout, "ok: restored %s into %s\n", res.StateID[:12], res.Dest)
 	return nil
 }
 
@@ -348,145 +326,6 @@ func absClean(p string) (string, error) {
 // open (a benign race). It is distinct from a legitimately empty file, which
 // must still be recorded.
 var errFileVanished = errors.New("file vanished")
-
-func restoreCommit(dest string, store core.BlockStore, c meta.Commit, verbose bool) error {
-	for _, fe := range c.Files {
-		outPath := filepath.Join(dest, filepath.FromSlash(fe.Path))
-		if strings.HasPrefix(filepath.Clean(outPath), filepath.Join(dest, ".fvs2")) {
-			continue
-		}
-
-		if verbose {
-			fmt.Printf("restoring: %s\n", fe.Path)
-		}
-
-		if fe.Link != "" {
-			if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-				return err
-			}
-			if cur, err := os.Readlink(outPath); err == nil && cur == fe.Link {
-				continue
-			}
-			_ = os.Remove(outPath)
-			if err := os.Symlink(fe.Link, outPath); err != nil {
-				return err
-			}
-			continue
-		}
-
-		if info, err := os.Lstat(outPath); err == nil {
-			if info.Mode().IsRegular() && info.Size() == fe.Size && uint32(info.Mode().Perm()) == fe.Mode && info.ModTime().Unix() == fe.ModTime {
-				// Skip if metadata matches
-				continue
-			}
-			// A non-regular file (e.g. a stale symlink) occupies the path: drop it.
-			if !info.Mode().IsRegular() {
-				_ = os.Remove(outPath)
-			}
-		}
-
-		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-			return err
-		}
-		f, err := os.OpenFile(outPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(fe.Mode))
-		if err != nil {
-			return err
-		}
-		bw := bufio.NewWriterSize(f, 65536) // 64KB buffer
-		var written int64
-		for _, bid := range fe.Blocks {
-			b, err := store.Get(bid)
-			if err != nil {
-				_ = f.Close()
-				return err
-			}
-			if _, err := bw.Write(b); err != nil {
-				_ = f.Close()
-				return err
-			}
-			written += int64(len(b))
-			if written >= fe.Size {
-				break
-			}
-		}
-		if err := bw.Flush(); err != nil {
-			_ = f.Close()
-			return err
-		}
-		if err := f.Close(); err != nil {
-			return err
-		}
-		// Set mod time to allow future fast skips
-		_ = os.Chtimes(outPath, time.Now(), time.Unix(fe.ModTime, 0))
-	}
-	return nil
-}
-
-// cleanDest removes any file or symlink under dest that is not part of the
-// restored commit, then prunes the directories left empty. The .fvs2 metadata
-// directory is always preserved. This turns restore into an exact checkout.
-func cleanDest(dest string, c meta.Commit, verbose bool) error {
-	want := make(map[string]bool, len(c.Files))
-	for _, fe := range c.Files {
-		want[filepath.Clean(filepath.Join(dest, filepath.FromSlash(fe.Path)))] = true
-	}
-	metaPath := filepath.Join(dest, ".fvs2")
-
-	var toRemove []string
-	err := filepath.WalkDir(dest, func(p string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		clean := filepath.Clean(p)
-		if clean == metaPath || strings.HasPrefix(clean, metaPath+string(os.PathSeparator)) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if clean == filepath.Clean(dest) || d.IsDir() {
-			return nil
-		}
-		if !want[clean] {
-			toRemove = append(toRemove, clean)
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	for _, p := range toRemove {
-		if verbose {
-			fmt.Printf("removing: %s\n", p)
-		}
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-	// Prune now-empty directories (deepest first), never touching .fvs2.
-	var dirs []string
-	_ = filepath.WalkDir(dest, func(p string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
-		}
-		clean := filepath.Clean(p)
-		if clean == metaPath {
-			return filepath.SkipDir
-		}
-		if d.IsDir() && clean != filepath.Clean(dest) {
-			dirs = append(dirs, clean)
-		}
-		return nil
-	})
-	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
-	for _, dir := range dirs {
-		entries, err := os.ReadDir(dir)
-		if err == nil && len(entries) == 0 {
-			_ = os.Remove(dir)
-		}
-	}
-	return nil
-}
 
 func computeDirty(root, headCommit string) (bool, int, error) {
 	cfg, err := meta.LoadConfig(root)
