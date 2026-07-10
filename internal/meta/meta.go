@@ -15,8 +15,35 @@ import (
 	"github.com/zeebo/blake3"
 )
 
+// CurrentFormat is the repo format written by Init. Format 1 (implicit when
+// the field is absent) uses fixed-size blocks; format 2 uses content-defined
+// chunking and records per-block sizes in commits.
+const CurrentFormat = 2
+
 type Config struct {
+	// Format is the on-disk repo format version. 0 means 1 (legacy).
+	Format    int `json:"format,omitempty"`
 	BlockSize int `json:"block_size"`
+	// Chunking holds the content-defined chunking parameters for format >= 2.
+	Chunking *ChunkingConfig `json:"chunking,omitempty"`
+}
+
+type ChunkingConfig struct {
+	MinSize int `json:"min_size"`
+	AvgSize int `json:"avg_size"`
+	MaxSize int `json:"max_size"`
+}
+
+// ChunkParams resolves the effective chunking parameters for this repo:
+// content-defined for format >= 2, fixed-size blocks otherwise.
+func (c Config) ChunkParams() core.ChunkParams {
+	if c.Format >= 2 {
+		if ch := c.Chunking; ch != nil && ch.MinSize > 0 && ch.AvgSize > 0 && ch.MaxSize > 0 {
+			return core.ChunkParams{Min: ch.MinSize, Avg: ch.AvgSize, Max: ch.MaxSize}
+		}
+		return core.DefaultChunkParams()
+	}
+	return core.FixedChunkParams(c.BlockSize)
 }
 
 type Index struct {
@@ -31,6 +58,7 @@ type CommitSummary struct {
 
 type Commit struct {
 	ID        string      `json:"id"`
+	Format    int         `json:"format,omitempty"`
 	TimeUTC   int64       `json:"time_utc"`
 	Message   string      `json:"message"`
 	BlockSize int         `json:"block_size"`
@@ -43,6 +71,10 @@ type FileEntry struct {
 	Size    int64          `json:"size"`
 	ModTime int64          `json:"mod_time"`
 	Blocks  []core.BlockID `json:"blocks"`
+	// BlockSizes holds the byte length of each entry in Blocks. It is present
+	// in format >= 2 commits, where blocks are content-defined and vary in
+	// size; format-1 readers derive offsets from the fixed block_size instead.
+	BlockSizes []int64 `json:"block_sizes,omitempty"`
 	// Link is the target of a symbolic link. When non-empty the entry
 	// represents a symlink (not a regular file) and Blocks is empty.
 	Link string `json:"link,omitempty"`
@@ -69,7 +101,16 @@ func Init(root string, blockSize int) error {
 		return err
 	}
 
-	cfg := Config{BlockSize: blockSize}
+	params := core.DefaultChunkParams()
+	cfg := Config{
+		Format:    CurrentFormat,
+		BlockSize: blockSize,
+		Chunking: &ChunkingConfig{
+			MinSize: params.Min,
+			AvgSize: params.Avg,
+			MaxSize: params.Max,
+		},
+	}
 	if err := writeJSONAtomic(configPath(root), cfg); err != nil {
 		return err
 	}
@@ -108,6 +149,9 @@ func LoadConfig(root string) (Config, error) {
 	var cfg Config
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return Config{}, err
+	}
+	if cfg.Format > CurrentFormat {
+		return Config{}, fmt.Errorf("repo format %d is not supported by this build (max %d)", cfg.Format, CurrentFormat)
 	}
 	if cfg.BlockSize <= 0 {
 		cfg.BlockSize = 4096
@@ -178,6 +222,57 @@ func NewBlockStore(root string) (*core.DiskBlockStore, error) {
 	return core.NewDiskBlockStore(blocksDir(root))
 }
 
+// DeleteCommit removes a state. The index entry is removed first, so a crash
+// leaves an orphan commit document for gc, never a dangling index entry.
+func DeleteCommit(root, id string) error {
+	idx, err := LoadIndex(root)
+	if err != nil {
+		return err
+	}
+	kept := idx.Commits[:0]
+	found := false
+	for _, c := range idx.Commits {
+		if c.ID == id {
+			found = true
+			continue
+		}
+		kept = append(kept, c)
+	}
+	if !found {
+		return fmt.Errorf("state not found: %s", id)
+	}
+	idx.Commits = kept
+	if err := SaveIndex(root, idx); err != nil {
+		return err
+	}
+	if err := os.Remove(CommitPath(root, id)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// CommitsDirIDs lists the commit ids present on disk in the commits
+// directory, whether or not they are referenced by the index.
+func CommitsDirIDs(root string) ([]string, error) {
+	ents, err := os.ReadDir(commitsDir(root))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []string
+	for _, e := range ents {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".json") || strings.HasPrefix(name, ".") {
+			continue
+		}
+		out = append(out, strings.TrimSuffix(name, ".json"))
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 func NewCommitID(t time.Time, message string, files []FileEntry) string {
 	h := blake3.New()
 	_, _ = h.Write([]byte(fmt.Sprintf("%d\n", t.UTC().UnixNano())))
@@ -222,6 +317,9 @@ func writeJSONAtomic(path string, v any) error {
 	if _, err := tmp.Write([]byte("\n")); err != nil {
 		return err
 	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
@@ -229,5 +327,15 @@ func writeJSONAtomic(path string, v any) error {
 		return err
 	}
 	ok = true
-	return nil
+	// fsync the directory so the rename itself is durable.
+	return syncDir(filepath.Dir(path))
+}
+
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }

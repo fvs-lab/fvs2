@@ -61,6 +61,11 @@ func Commit(root, message string, allowEmpty bool, verbose io.Writer) (CommitRes
 	if err != nil {
 		return CommitResult{}, err
 	}
+	lock, err := meta.LockRepo(root, 5*time.Second)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	defer lock.Unlock()
 	store, err := meta.NewBlockStore(root)
 	if err != nil {
 		return CommitResult{}, err
@@ -84,7 +89,7 @@ func Commit(root, message string, allowEmpty bool, verbose io.Writer) (CommitRes
 		}
 	}
 
-	files, err := snapshot(root, store, cfg.BlockSize, headFiles, verbose)
+	files, err := snapshot(root, store, cfg.ChunkParams(), headFiles, verbose)
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -94,7 +99,7 @@ func Commit(root, message string, allowEmpty bool, verbose io.Writer) (CommitRes
 
 	now := time.Now().UTC()
 	id := meta.NewCommitID(now, message, files)
-	commit := meta.Commit{ID: id, TimeUTC: now.Unix(), Message: message, BlockSize: cfg.BlockSize, Files: files}
+	commit := meta.Commit{ID: id, Format: cfg.Format, TimeUTC: now.Unix(), Message: message, BlockSize: cfg.BlockSize, Files: files}
 	if err := writeJSONAtomic(meta.CommitPath(root, id), commit); err != nil {
 		return CommitResult{}, err
 	}
@@ -134,7 +139,7 @@ func absolute(path string) (string, error) {
 
 var errFileVanished = errors.New("file vanished")
 
-func snapshot(root string, store core.BlockStore, blockSize int, head map[string]meta.FileEntry, verbose io.Writer) ([]meta.FileEntry, error) {
+func snapshot(root string, store core.BlockStore, params core.ChunkParams, head map[string]meta.FileEntry, verbose io.Writer) ([]meta.FileEntry, error) {
 	var files []meta.FileEntry
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -196,14 +201,14 @@ func snapshot(root string, store core.BlockStore, blockSize int, head map[string
 		if verbose != nil {
 			fmt.Fprintf(verbose, "hashing: %s\n", rel)
 		}
-		blocks, size, err := putFileBlocks(path, store, blockSize)
+		blocks, sizes, size, err := putFileBlocks(path, store, params)
 		if errors.Is(err, errFileVanished) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		files = append(files, meta.FileEntry{Path: rel, Mode: uint32(info.Mode().Perm()), Size: size, ModTime: info.ModTime().Unix(), Blocks: blocks})
+		files = append(files, meta.FileEntry{Path: rel, Mode: uint32(info.Mode().Perm()), Size: size, ModTime: info.ModTime().Unix(), Blocks: blocks, BlockSizes: sizes})
 		return nil
 	})
 	if err != nil {
@@ -213,42 +218,52 @@ func snapshot(root string, store core.BlockStore, blockSize int, head map[string
 	return files, nil
 }
 
-func putFileBlocks(path string, store core.BlockStore, blockSize int) ([]core.BlockID, int64, error) {
+func putFileBlocks(path string, store core.BlockStore, params core.ChunkParams) ([]core.BlockID, []int64, int64, error) {
+	return ChunkFile(path, params, store.Put)
+}
+
+// ChunkFile splits the file at path according to params and hands each chunk
+// to emit, which returns the chunk's block id. It returns the ids, the
+// per-chunk sizes, and the total byte count.
+func ChunkFile(path string, params core.ChunkParams, emit func([]byte) (core.BlockID, error)) ([]core.BlockID, []int64, int64, error) {
 	file, err := os.Open(path)
 	if os.IsNotExist(err) {
-		return nil, 0, errFileVanished
+		return nil, nil, 0, errFileVanished
 	}
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
 	defer file.Close()
 
-	reader := bufio.NewReaderSize(file, blockSize)
-	buffer := make([]byte, blockSize)
+	chunker, err := core.NewChunker(bufio.NewReaderSize(file, params.Max), params)
+	if err != nil {
+		return nil, nil, 0, err
+	}
 	var blocks []core.BlockID
+	var sizes []int64
 	var total int64
 	for {
-		n, err := io.ReadFull(reader, buffer)
+		chunk, err := chunker.Next()
 		if errors.Is(err, io.EOF) {
 			break
 		}
-		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, 0, err
+		if err != nil {
+			return nil, nil, 0, err
 		}
-		if n > 0 {
-			id, err := store.Put(buffer[:n])
-			if err != nil {
-				return nil, 0, err
-			}
-			blocks = append(blocks, id)
-			total += int64(n)
+		id, err := emit(chunk)
+		if err != nil {
+			return nil, nil, 0, err
 		}
-		if errors.Is(err, io.ErrUnexpectedEOF) {
-			break
-		}
+		blocks = append(blocks, id)
+		sizes = append(sizes, int64(len(chunk)))
+		total += int64(len(chunk))
 	}
-	return blocks, total, nil
+	return blocks, sizes, total, nil
 }
+
+// ErrFileVanished reports whether err means the file disappeared between the
+// directory walk and the open.
+func ErrFileVanished(err error) bool { return errors.Is(err, errFileVanished) }
 
 func sameFiles(head map[string]meta.FileEntry, files []meta.FileEntry) bool {
 	if len(head) != len(files) {
@@ -288,6 +303,9 @@ func writeJSONAtomic(path string, value any) error {
 	if _, err := temp.Write(append(data, '\n')); err != nil {
 		return err
 	}
+	if err := temp.Sync(); err != nil {
+		return err
+	}
 	if err := temp.Close(); err != nil {
 		return err
 	}
@@ -295,5 +313,11 @@ func writeJSONAtomic(path string, value any) error {
 		return err
 	}
 	ok = true
-	return nil
+	// fsync the directory so the rename itself is durable.
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }

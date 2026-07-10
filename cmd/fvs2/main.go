@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -18,7 +17,6 @@ import (
 	fvsrepo "fvs2/repo"
 
 	clibuilder "github.com/mirkobrombin/go-cli-builder/v2/pkg/cli"
-	"github.com/zeebo/blake3"
 )
 
 type CLI struct {
@@ -27,6 +25,8 @@ type CLI struct {
 	Init     InitCmd     `cmd:"init" help:"Initialize a directory for versioning"`
 	Commit   CommitCmd   `cmd:"commit" help:"Create a new state (snapshot)"`
 	States   StatesCmd   `cmd:"states" help:"List saved states"`
+	Drop     DropCmd     `cmd:"drop" help:"Delete a state (snapshot)"`
+	Gc       GcCmd       `cmd:"gc" help:"Remove unreferenced blocks and orphan states from the store"`
 	Restore  RestoreCmd  `cmd:"restore" help:"Restore a state into a directory"`
 	Branch   BranchCmd   `cmd:"branch" help:"Manage branches"`
 	Checkout CheckoutCmd `cmd:"checkout" help:"Update HEAD to a branch or a commit (detached)"`
@@ -39,6 +39,8 @@ func (c *CLI) Before() error {
 	c.Init.Root = c
 	c.Commit.Root = c
 	c.States.Root = c
+	c.Drop.Root = c
+	c.Gc.Root = c
 	c.Restore.Root = c
 	c.Branch.Root = c
 	c.Branch.List.Root = c
@@ -487,9 +489,13 @@ func cleanDest(dest string, c meta.Commit, verbose bool) error {
 }
 
 func computeDirty(root, headCommit string) (bool, int, error) {
+	cfg, err := meta.LoadConfig(root)
+	if err != nil {
+		return false, 0, err
+	}
 	// No head commit => treat as dirty if there are any files.
 	if headCommit == "" {
-		files, err := snapshotIDs(root, 4096)
+		files, err := snapshotIDs(root, cfg.ChunkParams())
 		if err != nil {
 			return false, 0, err
 		}
@@ -499,11 +505,16 @@ func computeDirty(root, headCommit string) (bool, int, error) {
 	if err != nil {
 		return false, 0, err
 	}
+	// Chunk the working tree with the head commit's parameters.
+	params := cfg.ChunkParams()
+	if c.Format < 2 {
+		params = core.FixedChunkParams(c.BlockSize)
+	}
 	want := make(map[string]meta.FileEntry, len(c.Files))
 	for _, fe := range c.Files {
 		want[fe.Path] = fe
 	}
-	got, err := snapshotIDs(root, c.BlockSize)
+	got, err := snapshotIDs(root, params)
 	if err != nil {
 		return false, 0, err
 	}
@@ -549,7 +560,7 @@ type snapEntry struct {
 	Link    string
 }
 
-func snapshotIDs(root string, blockSize int) (map[string]snapEntry, error) {
+func snapshotIDs(root string, params core.ChunkParams) (map[string]snapEntry, error) {
 	out := map[string]snapEntry{}
 	files, err := snapshotDirectoryNoStore(root)
 	if err != nil {
@@ -560,7 +571,7 @@ func snapshotIDs(root string, blockSize int) (map[string]snapEntry, error) {
 			out[f.Path] = snapEntry{Path: f.Path, Mode: f.Mode, ModTime: f.ModTime, Link: f.Link}
 			continue
 		}
-		blocks, size, err := hashFileBlocks(filepath.Join(root, filepath.FromSlash(f.Path)), blockSize)
+		blocks, size, err := hashFileBlocks(filepath.Join(root, filepath.FromSlash(f.Path)), params)
 		if err != nil {
 			if errors.Is(err, errFileVanished) {
 				continue
@@ -632,44 +643,19 @@ func snapshotDirectoryNoStore(root string) ([]meta.FileEntry, error) {
 	return files, nil
 }
 
-func hashFileBlocks(path string, blockSize int) ([]string, int64, error) {
-	f, err := os.Open(path)
+func hashFileBlocks(path string, params core.ChunkParams) ([]string, int64, error) {
+	ids, _, total, err := fvsrepo.ChunkFile(path, params, func(chunk []byte) (core.BlockID, error) {
+		return core.ContentID(chunk), nil
+	})
 	if err != nil {
-		if os.IsNotExist(err) {
+		if fvsrepo.ErrFileVanished(err) {
 			return nil, 0, errFileVanished
 		}
 		return nil, 0, err
 	}
-	defer f.Close()
-	if blockSize <= 0 {
-		blockSize = 4096
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = string(id)
 	}
-	br := bufio.NewReaderSize(f, blockSize)
-	buf := make([]byte, blockSize)
-	var total int64
-	var blocks []string
-	for {
-		n, err := io.ReadFull(br, buf)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			if errors.Is(err, io.ErrUnexpectedEOF) {
-				if n > 0 {
-					blocks = append(blocks, blake3hex(buf[:n]))
-					total += int64(n)
-				}
-				break
-			}
-			return nil, 0, err
-		}
-		blocks = append(blocks, blake3hex(buf[:n]))
-		total += int64(n)
-	}
-	return blocks, total, nil
-}
-
-func blake3hex(b []byte) string {
-	sum := blake3.Sum256(b)
-	return hex.EncodeToString(sum[:])
+	return out, total, nil
 }
