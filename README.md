@@ -96,6 +96,8 @@ Global flag: `--path` sets the repo root (default: current directory).
 | `status` | show HEAD, branch, and dirty state | `--check-dirty` |
 | `branch` | manage branches | `list`, `create <name>`, `delete <name>` |
 | `checkout` | move HEAD to a branch or commit | |
+| `drop` | delete a state | |
+| `gc` | remove unreferenced blocks and orphan states | `--dry-run` |
 
 Notes:
 
@@ -134,19 +136,26 @@ The engine is a small, dependency-light core (`fvs-v2-core`): a BLAKE3
 content-addressed block store plus a copy-on-write file abstraction. Import it
 directly to build your own snapshot/dedup logic.
 
+## Format and performance
+
+FVS uses **content-defined chunking** (FastCDC-style), so inserts and shifted
+data still deduplicate; unreferenced blocks are reclaimed with `gc`. The
+on-disk format, its guarantees (integrity on read, crash safety, stable chunk
+boundaries) and the compatibility policy are specified in
+[docs/FORMAT.md](docs/FORMAT.md).
+
+Numbers against restic and borg, with the reproducible harness in `bench/`,
+are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md); the short version: snapshots
+2-4x faster, comparable dedup, and a mounted state serves its first read in
+under 100 ms.
+
 ## Limitations and roadmap
 
-FVS uses **fixed-size blocks**. That is excellent for in-place edits and appends
-(VM images, databases, growing logs), but weak when bytes are inserted or
-prepended, since every following block shifts and is re-stored.
-Content-defined chunking (CDC), like restic and borg use, is on the roadmap and
-is the single biggest lever for dedup quality.
+- commit metadata is uncompressed JSON and grows with file count; packing it
+  is the next format change.
+- no remote yet: repositories are local (push/pull is the next milestone).
 
-Also planned:
-
-- garbage collection / refcounting in the block store.
-
-Contributions are very welcome, especially on CDC and the mount workflow.
+Contributions are very welcome.
 
 ## License
 
