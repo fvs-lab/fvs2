@@ -29,6 +29,10 @@ type CLI struct {
 	Branch   BranchCmd   `cmd:"branch" help:"Manage branches"`
 	Checkout CheckoutCmd `cmd:"checkout" help:"Update HEAD to a branch or a commit (detached)"`
 	Status   StatusCmd   `cmd:"status" help:"Show HEAD, active branch, and dirty state"`
+	Remote   RemoteCmd   `cmd:"remote" help:"Manage remotes"`
+	Push     PushCmd     `cmd:"push" help:"Upload a branch head to a remote"`
+	Pull     PullCmd     `cmd:"pull" help:"Download a branch head from a remote"`
+	Serve    ServeCmd    `cmd:"serve" help:"Serve a directory as an FVS remote"`
 
 	clibuilder.Base
 }
@@ -46,6 +50,14 @@ func (c *CLI) Before() error {
 	c.Branch.Delete.Root = c
 	c.Checkout.Root = c
 	c.Status.Root = c
+	c.Remote.Root = c
+	c.Remote.Add.Root = c
+	c.Remote.List.Root = c
+	c.Remote.Remove.Root = c
+	c.Remote.Gc.Root = c
+	c.Push.Root = c
+	c.Pull.Root = c
+	c.Serve.Root = c
 	return nil
 }
 

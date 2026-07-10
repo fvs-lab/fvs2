@@ -98,6 +98,10 @@ Global flag: `--path` sets the repo root (default: current directory).
 | `checkout` | move HEAD to a branch or commit | |
 | `drop` | delete a state | |
 | `gc` | remove unreferenced blocks and orphan states | `--dry-run` |
+| `remote` | manage remotes | `add <name> <url> [--token]`, `list`, `remove <name>` |
+| `push` | upload a branch head to a remote | `--remote`, `--branch`, `--force` |
+| `pull` | download a branch head from a remote | `--remote`, `--branch` |
+| `serve` | serve a directory as an FVS remote | `--root`, `--addr`, `--token` |
 
 Notes:
 
@@ -153,7 +157,10 @@ under 100 ms.
 
 - commit metadata is uncompressed JSON and grows with file count; packing it
   is the next format change.
-- no remote yet: repositories are local (push/pull is the next milestone).
+
+Remotes support per-user accounts with quotas, compressed batched transfers
+and server-side garbage collection; the protocol and its guarantees are in
+[docs/REMOTE.md](docs/REMOTE.md).
 
 Contributions are very welcome.
 
