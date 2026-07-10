@@ -102,6 +102,7 @@ Global flag: `--path` sets the repo root (default: current directory).
 | `push` | upload a branch head to a remote | `--remote`, `--branch`, `--force` |
 | `pull` | download a branch head from a remote | `--remote`, `--branch` |
 | `serve` | serve a directory as an FVS remote | `--root`, `--addr`, `--token` |
+| `env` | compose reproducible multi-layer environments | `lock`, `verify`, `sync`, `plan` |
 
 Notes:
 
@@ -160,7 +161,8 @@ under 100 ms.
 
 Remotes support per-user accounts with quotas, compressed batched transfers
 and server-side garbage collection; the protocol and its guarantees are in
-[docs/REMOTE.md](docs/REMOTE.md).
+[docs/REMOTE.md](docs/REMOTE.md). Multiple repositories compose into one
+reproducible mounted stack with [layered environments](docs/ENVIRONMENTS.md).
 
 Contributions are very welcome.
 

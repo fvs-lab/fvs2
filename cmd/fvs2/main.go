@@ -33,6 +33,7 @@ type CLI struct {
 	Push     PushCmd     `cmd:"push" help:"Upload a branch head to a remote"`
 	Pull     PullCmd     `cmd:"pull" help:"Download a branch head from a remote"`
 	Serve    ServeCmd    `cmd:"serve" help:"Serve a directory as an FVS remote"`
+	Env      EnvCmd      `cmd:"env" help:"Compose reproducible multi-layer environments"`
 
 	clibuilder.Base
 }
@@ -58,6 +59,11 @@ func (c *CLI) Before() error {
 	c.Push.Root = c
 	c.Pull.Root = c
 	c.Serve.Root = c
+	c.Env.Root = c
+	c.Env.Lock.Root = c
+	c.Env.Verify.Root = c
+	c.Env.Sync.Root = c
+	c.Env.Plan.Root = c
 	return nil
 }
 
