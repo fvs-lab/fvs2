@@ -159,8 +159,10 @@ under 100 ms.
 - commit metadata is uncompressed JSON and grows with file count; packing it
   is the next format change.
 
-Remotes support per-user accounts with quotas, compressed batched transfers
-and server-side garbage collection; the protocol and its guarantees are in
+Remotes are production-grade: HTTPS, runtime-managed accounts with quotas and
+team namespaces, S3-compatible block storage, compressed batched transfers,
+server-side garbage collection, Prometheus metrics, an audit log and per-account
+rate limiting. The protocol and its guarantees are in
 [docs/REMOTE.md](docs/REMOTE.md). Multiple repositories compose into one
 reproducible mounted stack with [layered environments](docs/ENVIRONMENTS.md).
 

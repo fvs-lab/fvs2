@@ -56,6 +56,10 @@ func (c *CLI) Before() error {
 	c.Remote.List.Root = c
 	c.Remote.Remove.Root = c
 	c.Remote.Gc.Root = c
+	c.Remote.User.Root = c
+	c.Remote.User.Add.Root = c
+	c.Remote.User.List.Root = c
+	c.Remote.User.Remove.Root = c
 	c.Push.Root = c
 	c.Pull.Root = c
 	c.Serve.Root = c

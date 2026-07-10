@@ -30,16 +30,24 @@ func (e *ErrRefConflict) Error() string {
 
 // Client talks to an FVS remote.
 type Client struct {
-	base  string
-	token string
-	http  *http.Client
+	base      string
+	token     string
+	namespace string
+	http      *http.Client
 }
 
 func NewClient(base, token string) *Client {
+	return NewClientNS(base, token, "")
+}
+
+// NewClientNS builds a client that addresses refs under the given namespace (a
+// team the account belongs to); an empty namespace uses the account's own.
+func NewClientNS(base, token, namespace string) *Client {
 	return &Client{
-		base:  strings.TrimRight(base, "/"),
-		token: token,
-		http:  &http.Client{Timeout: 5 * time.Minute},
+		base:      strings.TrimRight(base, "/"),
+		token:     token,
+		namespace: namespace,
+		http:      &http.Client{Timeout: 5 * time.Minute},
 	}
 }
 
@@ -56,6 +64,9 @@ func (c *Client) do(method, path string, body io.Reader, contentType, contentEnc
 	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	if c.namespace != "" {
+		req.Header.Set("X-Fvs-Namespace", c.namespace)
 	}
 	return c.http.Do(req)
 }
@@ -317,4 +328,54 @@ func (c *Client) GC(grace time.Duration) (GCResult, error) {
 		return GCResult{}, err
 	}
 	return out, nil
+}
+
+// AddUser creates an account on the remote (admin token required).
+func (c *Client) AddUser(u User) error {
+	payload, err := json.Marshal(u)
+	if err != nil {
+		return err
+	}
+	resp, err := c.do(http.MethodPost, "/v1/admin/accounts", bytes.NewReader(payload), "application/json", "")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		return unexpected(resp)
+	}
+	return nil
+}
+
+// RemoveUser deletes an account on the remote (admin token required).
+func (c *Client) RemoveUser(name string) error {
+	resp, err := c.do(http.MethodDelete, "/v1/admin/accounts/"+name, nil, "", "")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return unexpected(resp)
+	}
+	return nil
+}
+
+// ListUsers returns the accounts on the remote, tokens redacted (admin token
+// required).
+func (c *Client) ListUsers() ([]User, error) {
+	resp, err := c.do(http.MethodGet, "/v1/admin/accounts", nil, "", "")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, unexpected(resp)
+	}
+	var out struct {
+		Accounts []User `json:"accounts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out.Accounts, nil
 }

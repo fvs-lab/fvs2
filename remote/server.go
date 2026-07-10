@@ -19,88 +19,101 @@ import (
 	core "fvs-v2-core"
 )
 
-// User is one account on a remote. Blocks are shared across users (identical
-// content is stored once, whoever uploads it); refs are namespaced per user;
-// the quota counts the bytes of new blocks an account brought to the store.
-type User struct {
-	Name       string `json:"name"`
-	Token      string `json:"token"`
-	QuotaBytes int64  `json:"quota_bytes,omitempty"`
-	Admin      bool   `json:"admin,omitempty"`
-}
-
-// Server is the reference implementation of the FVS remote protocol over a
-// directory. See docs/REMOTE.md for the endpoints.
-type Server struct {
-	root    string
-	byToken map[string]User
-	open    bool // no users configured: every caller is the anonymous admin
-
-	mu    sync.Mutex // guards usage and gc
-	usage map[string]int64
-	store *core.DiskBlockStore
-}
+// namespaceHeader carries the ref namespace (an account name or a team) a
+// request targets. Empty means the caller's own namespace.
+const namespaceHeader = "X-Fvs-Namespace"
 
 // maxFrame bounds a single block frame in batch transfers.
 const maxFrame = 16 << 20
 
+// Config configures a remote server.
+type Config struct {
+	Root         string       // local directory for states, refs and (by default) blocks
+	AccountsFile string       // JSON file the server owns; enables runtime account changes
+	Users        []User       // seed accounts (used when AccountsFile is empty, e.g. tests)
+	Blocks       BlockBackend // block store; nil means a filesystem store under Root/blocks
+	RatePerSec   float64      // per-account request rate limit; 0 disables
+	RateBurst    int          // rate limiter burst
+	AuditFile    string       // append-only audit log; "" disables
+}
+
+// Server is the reference implementation of the FVS remote protocol. See
+// docs/REMOTE.md for the endpoints.
+type Server struct {
+	root     string
+	blocks   BlockBackend
+	accounts *accounts
+	limiter  *rateLimiter
+	metrics  *metrics
+	audit    *auditLog
+
+	mu    sync.Mutex // guards usage and gc
+	usage map[string]int64
+}
+
 // NewServer serves a remote from root. token == "" leaves the server open;
 // otherwise it behaves as a single admin account without quota.
 func NewServer(root, token string) (*Server, error) {
-	if token == "" {
-		return NewServerWithUsers(root, nil)
+	cfg := Config{Root: root}
+	if token != "" {
+		cfg.Users = []User{{Name: "default", Token: token, Admin: true}}
 	}
-	return NewServerWithUsers(root, []User{{Name: "default", Token: token, Admin: true}})
+	return NewServerConfig(cfg)
 }
 
-// NewServerWithUsers serves a remote with per-user accounts.
+// NewServerWithUsers serves a remote with per-account access, seeded in memory.
 func NewServerWithUsers(root string, users []User) (*Server, error) {
-	for _, dir := range []string{"blocks", "states", "refs"} {
-		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+	return NewServerConfig(Config{Root: root, Users: users})
+}
+
+// NewServerConfig builds a server from a full configuration.
+func NewServerConfig(cfg Config) (*Server, error) {
+	for _, dir := range []string{"states", "refs"} {
+		if err := os.MkdirAll(filepath.Join(cfg.Root, dir), 0o755); err != nil {
 			return nil, err
 		}
 	}
-	store, err := core.NewDiskBlockStore(filepath.Join(root, "blocks"))
+
+	blocks := cfg.Blocks
+	if blocks == nil {
+		fs, err := newFSBackend(filepath.Join(cfg.Root, "blocks"))
+		if err != nil {
+			return nil, err
+		}
+		blocks = fs
+	}
+
+	seed := cfg.Users
+	if cfg.AccountsFile != "" {
+		if existing, err := LoadUsers(cfg.AccountsFile); err == nil {
+			seed = existing
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
+	accts, err := newAccounts(cfg.AccountsFile, seed)
 	if err != nil {
 		return nil, err
 	}
-	byToken := map[string]User{}
-	for _, u := range users {
-		if u.Name == "" || u.Token == "" {
-			return nil, errors.New("every user needs a name and a token")
-		}
-		if !refName.MatchString(u.Name) {
-			return nil, fmt.Errorf("invalid user name: %s", u.Name)
-		}
-		if _, dup := byToken[u.Token]; dup {
-			return nil, fmt.Errorf("duplicate token for user %s", u.Name)
-		}
-		byToken[u.Token] = u
+
+	audit, err := newAuditLog(cfg.AuditFile)
+	if err != nil {
+		return nil, err
 	}
+
 	s := &Server{
-		root:    root,
-		byToken: byToken,
-		open:    len(byToken) == 0,
-		usage:   map[string]int64{},
-		store:   store,
+		root:     cfg.Root,
+		blocks:   blocks,
+		accounts: accts,
+		limiter:  newRateLimiter(cfg.RatePerSec, cfg.RateBurst),
+		metrics:  newMetrics(),
+		audit:    audit,
+		usage:    map[string]int64{},
 	}
 	if err := s.loadUsage(); err != nil {
 		return nil, err
 	}
 	return s, nil
-}
-
-// LoadUsers reads a JSON array of accounts, the format --users consumes.
-func LoadUsers(path string) ([]User, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var users []User
-	if err := json.Unmarshal(b, &users); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	return users, nil
 }
 
 var (
@@ -121,7 +134,7 @@ func (s *Server) loadUsage() error {
 	return json.Unmarshal(b, &s.usage)
 }
 
-// chargeNewBytes reserves n bytes of quota for user; it fails without
+// chargeNewBytes reserves n bytes of quota for account; it fails without
 // charging when the quota would be exceeded.
 func (s *Server) chargeNewBytes(u User, n int64) error {
 	s.mu.Lock()
@@ -137,18 +150,6 @@ func (s *Server) chargeNewBytes(u User, n int64) error {
 	return writeFileAtomic(s.usagePath(), append(b, '\n'))
 }
 
-func (s *Server) auth(r *http.Request) (User, bool) {
-	if s.open {
-		return User{Name: "default", Admin: true}, true
-	}
-	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if !ok {
-		return User{}, false
-	}
-	u, ok := s.byToken[token]
-	return u, ok
-}
-
 // body returns the request body, transparently decompressing gzip uploads.
 func body(r *http.Request) (io.ReadCloser, error) {
 	if r.Header.Get("Content-Encoding") == "gzip" {
@@ -158,12 +159,40 @@ func body(r *http.Request) (io.ReadCloser, error) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	user, ok := s.auth(r)
+	s.metrics.requests.Add(1)
+
+	// /metrics is unauthenticated so a scraper needs no account.
+	if r.URL.Path == "/metrics" {
+		s.metrics.write(w)
+		return
+	}
+
+	token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	user, ok := s.accounts.authenticate(token)
 	if !ok {
+		s.metrics.requestErrors.Add(1)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
+	if !s.limiter.allow(user.Name) {
+		s.metrics.rateLimited.Add(1)
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
+	rec := &statusRecorder{ResponseWriter: w}
+	s.route(rec, r, user)
+
+	if rec.status >= 400 {
+		s.metrics.requestErrors.Add(1)
+	}
+	if isMutating(r.Method) {
+		s.audit.record(user.Name, r.Method, r.URL.Path, rec.status)
+	}
+}
+
+func (s *Server) route(w *statusRecorder, r *http.Request, user User) {
 	path := strings.TrimPrefix(r.URL.Path, "/v1/")
 	switch {
 	case path == "blocks/check" && r.Method == http.MethodPost:
@@ -178,6 +207,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.state(w, r, strings.TrimPrefix(path, "states/"))
 	case strings.HasPrefix(path, "refs/"):
 		s.ref(w, r, user, strings.TrimPrefix(path, "refs/"))
+	case path == "admin/accounts" && r.Method == http.MethodGet:
+		s.listAccounts(w, user)
+	case path == "admin/accounts" && r.Method == http.MethodPost:
+		s.addAccount(w, r, user)
+	case strings.HasPrefix(path, "admin/accounts/") && r.Method == http.MethodDelete:
+		s.removeAccount(w, user, strings.TrimPrefix(path, "admin/accounts/"))
 	case path == "gc" && r.Method == http.MethodPost:
 		s.gc(w, r, user)
 	default:
@@ -208,7 +243,7 @@ func (s *Server) checkBlocks(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid block id", http.StatusBadRequest)
 			return
 		}
-		ok, err := s.store.Has(core.BlockID(id))
+		ok, err := s.blocks.Has(core.BlockID(id))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -242,7 +277,7 @@ func (s *Server) putBlocks(w http.ResponseWriter, r *http.Request, user User) {
 			return
 		}
 		id := core.ContentID(data)
-		ok, err := s.store.Has(id)
+		ok, err := s.blocks.Has(id)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -251,13 +286,16 @@ func (s *Server) putBlocks(w http.ResponseWriter, r *http.Request, user User) {
 			continue
 		}
 		if err := s.chargeNewBytes(user, int64(len(data))); err != nil {
+			s.metrics.quotaRejected.Add(1)
 			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
 			return
 		}
-		if _, err := s.store.Put(data); err != nil {
+		if _, err := s.blocks.Put(data); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		s.metrics.blocksAdded.Add(1)
+		s.metrics.bytesUploaded.Add(int64(len(data)))
 		added++
 	}
 	writeJSON(w, map[string]int{"added": added})
@@ -284,7 +322,7 @@ func (s *Server) fetchBlocks(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid block id", http.StatusBadRequest)
 			return
 		}
-		if ok, err := s.store.Has(core.BlockID(id)); err != nil || !ok {
+		if ok, err := s.blocks.Has(core.BlockID(id)); err != nil || !ok {
 			http.Error(w, "block not found: "+id, http.StatusNotFound)
 			return
 		}
@@ -299,13 +337,14 @@ func (s *Server) fetchBlocks(w http.ResponseWriter, r *http.Request) {
 		out = gz
 	}
 	for _, id := range req.Blocks {
-		data, err := s.store.Get(core.BlockID(id))
+		data, err := s.blocks.Get(core.BlockID(id))
 		if err != nil {
 			return // headers already sent; the client's hash check catches truncation
 		}
 		if err := writeFrame(out, data); err != nil {
 			return
 		}
+		s.metrics.bytesServed.Add(int64(len(data)))
 	}
 }
 
@@ -316,7 +355,7 @@ func (s *Server) block(w http.ResponseWriter, r *http.Request, user User, id str
 	}
 	switch r.Method {
 	case http.MethodGet:
-		data, err := s.store.Get(core.BlockID(id))
+		data, err := s.blocks.Get(core.BlockID(id))
 		if errors.Is(err, core.ErrBlockNotFound) {
 			http.NotFound(w, r)
 			return
@@ -327,6 +366,7 @@ func (s *Server) block(w http.ResponseWriter, r *http.Request, user User, id str
 		}
 		w.Header().Set("Content-Type", "application/octet-stream")
 		_, _ = w.Write(data)
+		s.metrics.bytesServed.Add(int64(len(data)))
 	case http.MethodPut:
 		rd, err := body(r)
 		if err != nil {
@@ -343,20 +383,23 @@ func (s *Server) block(w http.ResponseWriter, r *http.Request, user User, id str
 			http.Error(w, "content does not match block id", http.StatusBadRequest)
 			return
 		}
-		ok, err := s.store.Has(core.BlockID(id))
+		ok, err := s.blocks.Has(core.BlockID(id))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		if !ok {
 			if err := s.chargeNewBytes(user, int64(len(data))); err != nil {
+				s.metrics.quotaRejected.Add(1)
 				http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
 				return
 			}
-			if _, err := s.store.Put(data); err != nil {
+			if _, err := s.blocks.Put(data); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			s.metrics.blocksAdded.Add(1)
+			s.metrics.bytesUploaded.Add(int64(len(data)))
 		}
 		w.WriteHeader(http.StatusCreated)
 	default:
@@ -402,10 +445,23 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request, id string) {
 	}
 }
 
-// refPath places refs under a per-user namespace, so accounts cannot read or
-// move each other's branches.
-func (s *Server) refPath(user User, name string) string {
-	return filepath.Join(s.root, "refs", user.Name, name)
+// resolveNamespace picks the ref namespace for a request and checks the
+// account may use it.
+func (s *Server) resolveNamespace(r *http.Request, user User) (string, bool) {
+	ns := r.Header.Get(namespaceHeader)
+	if ns == "" {
+		ns = user.Name
+	}
+	if !refName.MatchString(ns) {
+		return "", false
+	}
+	return ns, s.accounts.allows(user, ns)
+}
+
+// refPath places refs under a namespace directory, so accounts cannot read or
+// move branches outside their own namespace or their teams'.
+func (s *Server) refPath(namespace, name string) string {
+	return filepath.Join(s.root, "refs", namespace, name)
 }
 
 func (s *Server) ref(w http.ResponseWriter, r *http.Request, user User, name string) {
@@ -413,9 +469,15 @@ func (s *Server) ref(w http.ResponseWriter, r *http.Request, user User, name str
 		http.Error(w, "invalid ref name", http.StatusBadRequest)
 		return
 	}
+	namespace, allowed := s.resolveNamespace(r, user)
+	if !allowed {
+		http.Error(w, "not a member of that namespace", http.StatusForbidden)
+		return
+	}
+	refPath := s.refPath(namespace, name)
 	switch r.Method {
 	case http.MethodGet:
-		data, err := os.ReadFile(s.refPath(user, name))
+		data, err := os.ReadFile(refPath)
 		if errors.Is(err, os.ErrNotExist) {
 			http.NotFound(w, r)
 			return
@@ -447,8 +509,10 @@ func (s *Server) ref(w http.ResponseWriter, r *http.Request, user User, name str
 			http.Error(w, "invalid state id", http.StatusBadRequest)
 			return
 		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
 		cur := ""
-		if data, err := os.ReadFile(s.refPath(user, name)); err == nil {
+		if data, err := os.ReadFile(refPath); err == nil {
 			cur = strings.TrimSpace(string(data))
 		} else if !errors.Is(err, os.ErrNotExist) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -458,17 +522,17 @@ func (s *Server) ref(w http.ResponseWriter, r *http.Request, user User, name str
 			writeJSONStatus(w, http.StatusConflict, map[string]string{"id": cur})
 			return
 		}
-		if err := os.MkdirAll(filepath.Dir(s.refPath(user, name)), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(refPath), 0o755); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if err := writeFileAtomic(s.refPath(user, name), []byte(req.ID+"\n")); err != nil {
+		if err := writeFileAtomic(refPath, []byte(req.ID+"\n")); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	case http.MethodDelete:
-		err := os.Remove(s.refPath(user, name))
+		err := os.Remove(refPath)
 		if errors.Is(err, os.ErrNotExist) {
 			http.NotFound(w, r)
 			return
@@ -481,6 +545,43 @@ func (s *Server) ref(w http.ResponseWriter, r *http.Request, user User, name str
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) listAccounts(w http.ResponseWriter, user User) {
+	if !user.Admin {
+		http.Error(w, "admin only", http.StatusForbidden)
+		return
+	}
+	writeJSON(w, map[string][]User{"accounts": s.accounts.list()})
+}
+
+func (s *Server) addAccount(w http.ResponseWriter, r *http.Request, user User) {
+	if !user.Admin {
+		http.Error(w, "admin only", http.StatusForbidden)
+		return
+	}
+	var u User
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&u); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.accounts.add(u); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+}
+
+func (s *Server) removeAccount(w http.ResponseWriter, user User, name string) {
+	if !user.Admin {
+		http.Error(w, "admin only", http.StatusForbidden)
+		return
+	}
+	if err := s.accounts.remove(name); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // gc removes blocks and states no ref reaches anymore. Only objects older
@@ -559,20 +660,20 @@ func (s *Server) gc(w http.ResponseWriter, r *http.Request, user User) {
 		}
 	}
 
+	blocks, err := s.blocks.List()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	removedBlocks := 0
 	var freed int64
-	blocks, _ := os.ReadDir(filepath.Join(s.root, "blocks"))
-	for _, e := range blocks {
-		if e.IsDir() || liveBlocks[core.BlockID(e.Name())] {
+	for _, b := range blocks {
+		if liveBlocks[b.ID] || b.ModTime.After(cutoff) {
 			continue
 		}
-		info, err := e.Info()
-		if err != nil || info.ModTime().After(cutoff) {
-			continue
-		}
-		if s.store.Delete(core.BlockID(e.Name())) == nil {
+		if s.blocks.Delete(b.ID) == nil {
 			removedBlocks++
-			freed += info.Size()
+			freed += b.Size
 		}
 	}
 
@@ -619,7 +720,13 @@ func writeJSONStatus(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+func readFile(path string) ([]byte, error) { return os.ReadFile(path) }
+
 func writeFileAtomic(path string, data []byte) error {
+	return writeFileAtomicMode(path, data, 0o644)
+}
+
+func writeFileAtomicMode(path string, data []byte, mode os.FileMode) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
 	if err != nil {
 		return err
@@ -632,6 +739,9 @@ func writeFileAtomic(path string, data []byte) error {
 			_ = os.Remove(tmpPath)
 		}
 	}()
+	if err := tmp.Chmod(mode); err != nil {
+		return err
+	}
 	if _, err := tmp.Write(data); err != nil {
 		return err
 	}
@@ -648,9 +758,20 @@ func writeFileAtomic(path string, data []byte) error {
 	return nil
 }
 
-// ListenAndServe runs the server on addr.
+// Close releases server resources (the audit log).
+func (s *Server) Close() error { return s.audit.Close() }
+
+// ListenAndServe runs the server on addr over plain HTTP.
 func (s *Server) ListenAndServe(addr string) error {
 	srv := &http.Server{Addr: addr, Handler: s}
 	fmt.Fprintf(os.Stderr, "remote: serving %s on %s\n", s.root, addr)
 	return srv.ListenAndServe()
+}
+
+// ListenAndServeTLS runs the server on addr over HTTPS with the given
+// certificate and key.
+func (s *Server) ListenAndServeTLS(addr, certFile, keyFile string) error {
+	srv := &http.Server{Addr: addr, Handler: s}
+	fmt.Fprintf(os.Stderr, "remote: serving %s on %s (TLS)\n", s.root, addr)
+	return srv.ListenAndServeTLS(certFile, keyFile)
 }

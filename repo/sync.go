@@ -80,7 +80,7 @@ func Push(root string, rm meta.Remote, branch string, force bool) (PushResult, e
 		return PushResult{}, err
 	}
 
-	client := remote.NewClient(rm.URL, rm.Token)
+	client := remote.NewClientNS(rm.URL, rm.Token, rm.Namespace)
 
 	remoteID, err := client.GetRef(branch)
 	if err != nil {
@@ -137,7 +137,7 @@ func Pull(root string, rm meta.Remote, branch string) (PullResult, error) {
 		branch = head.Name
 	}
 
-	client := remote.NewClient(rm.URL, rm.Token)
+	client := remote.NewClientNS(rm.URL, rm.Token, rm.Namespace)
 	id, err := client.GetRef(branch)
 	if err != nil {
 		return PullResult{}, err

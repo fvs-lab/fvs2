@@ -24,22 +24,59 @@ knowledge: pushing over a remote state this repository has never seen fails
 and requires `--force` or a pull first. Concurrent pushes are serialized by
 the compare-and-swap: the loser gets a conflict, never a silent overwrite.
 
-## Accounts and quotas
+## Accounts, teams and quotas
 
 A server runs either open (no auth), with a single admin token (`--token`),
-or with per-user accounts (`--users accounts.json`):
+or with per-account access from a file the server owns (`--accounts
+accounts.json`):
 
 ```json
 [
   { "name": "mirko", "token": "tok-1", "admin": true },
-  { "name": "deck",  "token": "tok-2", "quota_bytes": 10737418240 }
+  { "name": "deck",  "token": "tok-2", "quota_bytes": 10737418240 },
+  { "name": "alice", "token": "tok-3", "teams": ["acme"] }
 ]
 ```
 
-Each account authenticates with `Authorization: Bearer <token>` and sees only
-its own refs. Blocks stay shared: an account's quota counts the bytes of
+Each account authenticates with `Authorization: Bearer <token>`. Refs live
+under a namespace: an account's own name by default, or a **team** it belongs
+to, selected with the `X-Fvs-Namespace` header (the `--namespace` flag on
+`fvs2 remote add`). Team members share the same refs; non-members are refused.
+Blocks stay shared across everyone: an account's quota counts the bytes of
 blocks it was the first to upload, so content the store already has is free.
 Usage is persisted in `usage.json` next to the store.
+
+Accounts are managed **at runtime**, without a restart, by an admin:
+
+```bash
+fvs2 remote user add deck --token tok-2 --quota 10737418240
+fvs2 remote user add alice --token tok-3 --teams acme
+fvs2 remote user list
+fvs2 remote user remove deck
+```
+
+Changes persist to the `--accounts` file. The admin endpoints are also
+available directly under `/v1/admin/accounts`.
+
+## Transport security
+
+Pass `--tls-cert` and `--tls-key` to serve HTTPS directly; without them the
+server speaks plain HTTP (put it behind a TLS reverse proxy, or keep it on
+localhost).
+
+## Block storage
+
+Blocks live on local disk by default. Point them at any S3-compatible object
+store (AWS S3, MinIO, Cloudflare R2) with `--s3-endpoint`, `--s3-bucket` and
+credentials; states and refs stay local, where compare-and-swap is cheap.
+
+## Observability
+
+`/metrics` serves Prometheus counters (requests, blocks added, bytes moved,
+rate-limited and quota-rejected requests, uptime) with no auth. `--audit
+<file>` appends one JSON line per mutating request (account, method, path,
+status). `--rate` caps requests per second per account (token bucket, with
+`--burst`); over-limit requests get `429`.
 
 ## Transfers
 
@@ -66,7 +103,13 @@ All under `/v1/`.
 | GET | `/v1/refs/<name>` | | `{"id": "<state id>"}`; 404 if absent |
 | PUT | `/v1/refs/<name>` | `{"id": "...", "old": "..."}` | 204; 409 with the current id when `old` does not match (empty `old` means "must not exist") |
 | DELETE | `/v1/refs/<name>` | | 204 |
+| GET | `/v1/admin/accounts` | | account list (tokens redacted); admin only |
+| POST | `/v1/admin/accounts` | account JSON | 201; admin only |
+| DELETE | `/v1/admin/accounts/<name>` | | 204; admin only |
 | POST | `/v1/gc?grace_seconds=N` | | removal counts; admin only |
+| GET | `/metrics` | | Prometheus counters; no auth |
+
+Ref requests carry an optional `X-Fvs-Namespace` header to target a team.
 
 ## Garbage collection
 
@@ -78,8 +121,13 @@ uploaded but ref not moved yet, can never be collected.
 ## Usage
 
 ```bash
-# on the server (a directory is the whole backend)
-fvs2 serve --root /srv/fvs --addr 0.0.0.0:8040 --users /etc/fvs/accounts.json
+# on the server: HTTPS, runtime-managed accounts, S3 blocks, audit + metrics
+fvs2 serve --root /srv/fvs --addr 0.0.0.0:8040 \
+    --accounts /etc/fvs/accounts.json \
+    --tls-cert /etc/fvs/cert.pem --tls-key /etc/fvs/key.pem \
+    --s3-endpoint s3.example.org --s3-bucket fvs \
+    --s3-access-key KEY --s3-secret-key SECRET --s3-ssl \
+    --audit /var/log/fvs/audit.log --rate 100
 
 # on each machine
 fvs2 remote add origin https://example.org:8040 --token tok-2
@@ -87,9 +135,10 @@ fvs2 push                 # upload the current branch head
 fvs2 pull                 # fetch it elsewhere
 fvs2 restore -s <state>   # materialize it
 
+# a shared team namespace
+fvs2 remote add team https://example.org:8040 --token tok-3 --namespace acme
+fvs2 push --remote team
+
 # housekeeping (admin account)
 fvs2 remote gc --grace 3600
 ```
-
-Serve plain HTTP: put it behind a TLS reverse proxy for anything beyond
-localhost.

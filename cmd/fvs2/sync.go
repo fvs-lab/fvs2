@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"fvs2/internal/meta"
@@ -15,8 +16,112 @@ type RemoteCmd struct {
 	List   RemoteListCmd   `cmd:"list" help:"List remotes"`
 	Remove RemoteRemoveCmd `cmd:"remove" help:"Remove a remote"`
 	Gc     RemoteGcCmd     `cmd:"gc" help:"Run garbage collection on a remote (admin)"`
+	User   RemoteUserCmd   `cmd:"user" help:"Manage accounts on a remote (admin)"`
 
 	Root *CLI `internal:"ignore"`
+}
+
+type RemoteUserCmd struct {
+	Add    RemoteUserAddCmd    `cmd:"add" help:"Create an account on a remote"`
+	List   RemoteUserListCmd   `cmd:"list" help:"List accounts on a remote"`
+	Remove RemoteUserRemoveCmd `cmd:"remove" help:"Delete an account on a remote"`
+
+	Root *CLI `internal:"ignore"`
+}
+
+func remoteClient(root, name string) (*remote.Client, error) {
+	rm, err := meta.GetRemote(root, name)
+	if err != nil {
+		return nil, err
+	}
+	return remote.NewClientNS(rm.URL, rm.Token, rm.Namespace), nil
+}
+
+type RemoteUserAddCmd struct {
+	Remote string `cli:"remote" help:"remote name (default: the only one configured)"`
+	Token  string `cli:"token" required:"true" help:"bearer token for the new account"`
+	Quota  int64  `cli:"quota" help:"quota in bytes (0 = unlimited)"`
+	Admin  bool   `cli:"admin" help:"grant admin rights"`
+	Teams  string `cli:"teams" help:"comma-separated team namespaces to grant"`
+	Name   string `arg:"" required:"true" help:"account name"`
+	Root   *CLI   `internal:"ignore"`
+}
+
+func (c *RemoteUserAddCmd) Run() error {
+	root, err := absClean(c.Root.Path)
+	if err != nil {
+		return err
+	}
+	client, err := remoteClient(root, c.Remote)
+	if err != nil {
+		return err
+	}
+	var teams []string
+	if c.Teams != "" {
+		teams = strings.Split(c.Teams, ",")
+	}
+	if err := client.AddUser(remote.User{Name: c.Name, Token: c.Token, QuotaBytes: c.Quota, Admin: c.Admin, Teams: teams}); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "ok: account %s created\n", c.Name)
+	return nil
+}
+
+type RemoteUserListCmd struct {
+	Remote string `cli:"remote" help:"remote name (default: the only one configured)"`
+	Root   *CLI   `internal:"ignore"`
+}
+
+func (c *RemoteUserListCmd) Run() error {
+	root, err := absClean(c.Root.Path)
+	if err != nil {
+		return err
+	}
+	client, err := remoteClient(root, c.Remote)
+	if err != nil {
+		return err
+	}
+	users, err := client.ListUsers()
+	if err != nil {
+		return err
+	}
+	if len(users) == 0 {
+		fmt.Fprintln(os.Stdout, "(no accounts)")
+		return nil
+	}
+	for _, u := range users {
+		flags := ""
+		if u.Admin {
+			flags = " admin"
+		}
+		if len(u.Teams) > 0 {
+			flags += " teams=" + strings.Join(u.Teams, ",")
+		}
+		fmt.Fprintf(os.Stdout, "%-16s quota=%d%s\n", u.Name, u.QuotaBytes, flags)
+	}
+	return nil
+}
+
+type RemoteUserRemoveCmd struct {
+	Remote string `cli:"remote" help:"remote name (default: the only one configured)"`
+	Name   string `arg:"" required:"true" help:"account name"`
+	Root   *CLI   `internal:"ignore"`
+}
+
+func (c *RemoteUserRemoveCmd) Run() error {
+	root, err := absClean(c.Root.Path)
+	if err != nil {
+		return err
+	}
+	client, err := remoteClient(root, c.Remote)
+	if err != nil {
+		return err
+	}
+	if err := client.RemoveUser(c.Name); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "ok: account %s removed\n", c.Name)
+	return nil
 }
 
 type RemoteGcCmd struct {
@@ -45,10 +150,11 @@ func (c *RemoteGcCmd) Run() error {
 }
 
 type RemoteAddCmd struct {
-	Token string `cli:"token" help:"bearer token for the remote"`
-	Name  string `arg:"" required:"true" help:"remote name"`
-	URL   string `arg:"" required:"true" help:"remote base URL (e.g. https://host:8040)"`
-	Root  *CLI   `internal:"ignore"`
+	Token     string `cli:"token" help:"bearer token for the remote"`
+	Namespace string `cli:"namespace" help:"ref namespace to push under (a team you belong to)"`
+	Name      string `arg:"" required:"true" help:"remote name"`
+	URL       string `arg:"" required:"true" help:"remote base URL (e.g. https://host:8040)"`
+	Root      *CLI   `internal:"ignore"`
 }
 
 func (c *RemoteAddCmd) Run() error {
@@ -56,7 +162,7 @@ func (c *RemoteAddCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	if err := meta.AddRemote(root, c.Name, meta.Remote{URL: c.URL, Token: c.Token}); err != nil {
+	if err := meta.AddRemote(root, c.Name, meta.Remote{URL: c.URL, Token: c.Token, Namespace: c.Namespace}); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stdout, "ok: remote %s -> %s\n", c.Name, c.URL)
@@ -162,11 +268,25 @@ func (c *PullCmd) Run() error {
 }
 
 type ServeCmd struct {
-	RootDir string `cli:"root" help:"directory backing the remote (default: --path)"`
-	Addr    string `cli:"addr" default:"127.0.0.1:8040" help:"listen address"`
-	Token   string `cli:"token" help:"single admin account with this bearer token"`
-	Users   string `cli:"users" help:"JSON file with per-user accounts (name, token, quota_bytes, admin)"`
-	Root    *CLI   `internal:"ignore"`
+	RootDir  string `cli:"root" help:"directory backing the remote (default: --path)"`
+	Addr     string `cli:"addr" default:"127.0.0.1:8040" help:"listen address"`
+	Token    string `cli:"token" help:"single admin account with this bearer token"`
+	Accounts string `cli:"accounts" help:"JSON file of accounts; managed at runtime and persisted"`
+	Audit    string `cli:"audit" help:"append-only audit log file"`
+	Rate     int    `cli:"rate" help:"per-account request rate limit (req/s, 0 = unlimited)"`
+	Burst    int    `cli:"burst" default:"64" help:"rate limiter burst"`
+	TLSCert  string `cli:"tls-cert" help:"TLS certificate file (enables HTTPS)"`
+	TLSKey   string `cli:"tls-key" help:"TLS private key file"`
+
+	S3Endpoint string `cli:"s3-endpoint" help:"S3 endpoint (host:port); stores blocks in S3 instead of the local disk"`
+	S3Bucket   string `cli:"s3-bucket" help:"S3 bucket"`
+	S3Key      string `cli:"s3-access-key" help:"S3 access key"`
+	S3Secret   string `cli:"s3-secret-key" help:"S3 secret key"`
+	S3Region   string `cli:"s3-region" help:"S3 region"`
+	S3Prefix   string `cli:"s3-prefix" help:"key prefix inside the bucket"`
+	S3SSL      bool   `cli:"s3-ssl" help:"use TLS to reach the S3 endpoint"`
+
+	Root *CLI `internal:"ignore"`
 }
 
 func (c *ServeCmd) Run() error {
@@ -178,21 +298,44 @@ func (c *ServeCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	var server *remote.Server
-	if c.Users != "" {
-		users, err := remote.LoadUsers(c.Users)
+
+	cfg := remote.Config{
+		Root:         dir,
+		AccountsFile: c.Accounts,
+		AuditFile:    c.Audit,
+		RatePerSec:   float64(c.Rate),
+		RateBurst:    c.Burst,
+	}
+	if c.Accounts == "" && c.Token != "" {
+		cfg.Users = []remote.User{{Name: "default", Token: c.Token, Admin: true}}
+	}
+	if c.S3Endpoint != "" {
+		backend, err := remote.NewS3Backend(remote.S3Config{
+			Endpoint:  c.S3Endpoint,
+			Bucket:    c.S3Bucket,
+			AccessKey: c.S3Key,
+			SecretKey: c.S3Secret,
+			Region:    c.S3Region,
+			Prefix:    c.S3Prefix,
+			UseSSL:    c.S3SSL,
+		})
 		if err != nil {
 			return err
 		}
-		server, err = remote.NewServerWithUsers(dir, users)
-		if err != nil {
-			return err
+		cfg.Blocks = backend
+	}
+
+	server, err := remote.NewServerConfig(cfg)
+	if err != nil {
+		return err
+	}
+	defer server.Close()
+
+	if c.TLSCert != "" || c.TLSKey != "" {
+		if c.TLSCert == "" || c.TLSKey == "" {
+			return fmt.Errorf("both --tls-cert and --tls-key are required for HTTPS")
 		}
-	} else {
-		server, err = remote.NewServer(dir, c.Token)
-		if err != nil {
-			return err
-		}
+		return server.ListenAndServeTLS(c.Addr, c.TLSCert, c.TLSKey)
 	}
 	return server.ListenAndServe(c.Addr)
 }

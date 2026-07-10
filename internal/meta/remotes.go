@@ -10,8 +10,9 @@ import (
 )
 
 type Remote struct {
-	URL   string `json:"url"`
-	Token string `json:"token,omitempty"`
+	URL       string `json:"url"`
+	Token     string `json:"token,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
 }
 
 func remotesPath(root string) string { return filepath.Join(metaDir(root), "remotes.json") }
