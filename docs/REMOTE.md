@@ -73,7 +73,8 @@ one node authenticates on the others immediately.
 
 Pass `--tls-cert` and `--tls-key` to serve HTTPS directly; without them the
 server speaks plain HTTP (put it behind a TLS reverse proxy, or keep it on
-localhost).
+localhost). Browser clients (the web UI) need `--cors-origin` set to their
+origin; preflight `OPTIONS` requests pass without auth.
 
 ## Block storage
 
@@ -114,6 +115,8 @@ All under `/v1/`.
 | GET | `/v1/refs/<name>` | | `{"id": "<state id>"}`; 404 if absent |
 | PUT | `/v1/refs/<name>` | `{"id": "...", "old": "..."}` | 204; 409 with the current id when `old` does not match (empty `old` means "must not exist") |
 | DELETE | `/v1/refs/<name>` | | 204 |
+| GET | `/v1/whoami` | | calling account: name, teams, admin, quota and usage |
+| GET | `/v1/refs` | | every ref in the namespace, with its state id |
 | GET | `/v1/admin/accounts` | | account list (tokens redacted); admin only |
 | POST | `/v1/admin/accounts` | account JSON | 201; admin only |
 | DELETE | `/v1/admin/accounts/<name>` | | 204; admin only |

@@ -2,6 +2,8 @@ package remote
 
 import (
 	"bytes"
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -284,4 +286,116 @@ func TestS3BackedServer(t *testing.T) {
 	if !bytes.Equal(got, data) {
 		t.Fatal("block fetched from the S3-backed server differs")
 	}
+}
+
+func TestWhoamiAndListRefs(t *testing.T) {
+	_, ts := newTestServer(t, Config{Users: []User{
+		{Name: "alice", Token: "ta", QuotaBytes: 5 << 20, Teams: []string{"acme"}},
+	}})
+	c := NewClient(ts.URL, "ta")
+
+	resp, err := ts.Client().Do(mustReq(t, "GET", ts.URL+"/v1/whoami", "ta", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var who struct {
+		Name       string   `json:"name"`
+		Admin      bool     `json:"admin"`
+		Teams      []string `json:"teams"`
+		QuotaBytes int64    `json:"quota_bytes"`
+		UsedBytes  int64    `json:"used_bytes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&who); err != nil {
+		t.Fatal(err)
+	}
+	if who.Name != "alice" || who.QuotaBytes != 5<<20 || len(who.Teams) != 1 {
+		t.Fatalf("whoami = %+v", who)
+	}
+
+	// Two personal refs and one team ref: the list is namespace-scoped.
+	if err := c.PutRef("main", strings.Repeat("a", 64), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.PutRef("dev", strings.Repeat("b", 64), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewClientNS(ts.URL, "ta", "acme").PutRef("release", strings.Repeat("c", 64), ""); err != nil {
+		t.Fatal(err)
+	}
+
+	list := func(ns string) map[string]string {
+		req := mustReq(t, "GET", ts.URL+"/v1/refs", "ta", ns)
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out struct {
+			Refs []struct{ Name, ID string } `json:"refs"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		m := map[string]string{}
+		for _, r := range out.Refs {
+			m[r.Name] = r.ID
+		}
+		return m
+	}
+	personal := list("")
+	if len(personal) != 2 || personal["main"] == "" || personal["dev"] == "" {
+		t.Fatalf("personal refs = %v", personal)
+	}
+	team := list("acme")
+	if len(team) != 1 || team["release"] == "" {
+		t.Fatalf("team refs = %v", team)
+	}
+}
+
+func TestCORSHeadersAndPreflight(t *testing.T) {
+	_, ts := newTestServer(t, Config{
+		Users:      []User{{Name: "u", Token: "t"}},
+		CORSOrigin: "https://ui.example.org",
+	})
+
+	// Preflight passes without auth.
+	req, _ := http.NewRequest(http.MethodOptions, ts.URL+"/v1/refs", nil)
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("preflight status = %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "https://ui.example.org" {
+		t.Fatalf("allow-origin = %q", got)
+	}
+	if !strings.Contains(resp.Header.Get("Access-Control-Allow-Headers"), "Authorization") {
+		t.Fatal("allow-headers missing Authorization")
+	}
+
+	// Regular responses carry the origin too.
+	resp2, err := ts.Client().Do(mustReq(t, "GET", ts.URL+"/v1/whoami", "t", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if got := resp2.Header.Get("Access-Control-Allow-Origin"); got != "https://ui.example.org" {
+		t.Fatalf("allow-origin on GET = %q", got)
+	}
+}
+
+func mustReq(t *testing.T, method, url, token, namespace string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	if namespace != "" {
+		req.Header.Set(namespaceHeader, namespace)
+	}
+	return req
 }

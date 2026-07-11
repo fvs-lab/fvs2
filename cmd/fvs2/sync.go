@@ -277,6 +277,7 @@ type ServeCmd struct {
 	Burst    int    `cli:"burst" default:"64" help:"rate limiter burst"`
 	TLSCert  string `cli:"tls-cert" help:"TLS certificate file (enables HTTPS)"`
 	TLSKey   string `cli:"tls-key" help:"TLS private key file"`
+	CORS     string `cli:"cors-origin" help:"allow browser clients from this origin (e.g. https://ui.example.org, or *)"`
 
 	S3Endpoint string `cli:"s3-endpoint" help:"S3 endpoint (host:port); stores blocks in S3 instead of the local disk"`
 	S3Bucket   string `cli:"s3-bucket" help:"S3 bucket"`
@@ -305,6 +306,7 @@ func (c *ServeCmd) Run() error {
 		AuditFile:    c.Audit,
 		RatePerSec:   float64(c.Rate),
 		RateBurst:    c.Burst,
+		CORSOrigin:   c.CORS,
 	}
 	if c.Accounts == "" && c.Token != "" {
 		cfg.Users = []remote.User{{Name: "default", Token: c.Token, Admin: true}}

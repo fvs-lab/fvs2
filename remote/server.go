@@ -34,17 +34,19 @@ type Config struct {
 	RatePerSec   float64      // per-account request rate limit; 0 disables
 	RateBurst    int          // rate limiter burst
 	AuditFile    string       // append-only audit log; "" disables
+	CORSOrigin   string       // Access-Control-Allow-Origin value; "" disables CORS
 }
 
 // Server is the reference implementation of the FVS remote protocol. See
 // docs/REMOTE.md for the endpoints.
 type Server struct {
-	root     string
-	blocks   BlockBackend
-	accounts *accounts
-	limiter  *rateLimiter
-	metrics  *metrics
-	audit    *auditLog
+	root       string
+	blocks     BlockBackend
+	accounts   *accounts
+	limiter    *rateLimiter
+	metrics    *metrics
+	audit      *auditLog
+	corsOrigin string
 }
 
 // NewServer serves a remote from root. token == "" leaves the server open;
@@ -98,12 +100,13 @@ func NewServerConfig(cfg Config) (*Server, error) {
 	}
 
 	return &Server{
-		root:     cfg.Root,
-		blocks:   blocks,
-		accounts: accts,
-		limiter:  newRateLimiter(cfg.RatePerSec, cfg.RateBurst),
-		metrics:  newMetrics(),
-		audit:    audit,
+		root:       cfg.Root,
+		blocks:     blocks,
+		accounts:   accts,
+		limiter:    newRateLimiter(cfg.RatePerSec, cfg.RateBurst),
+		metrics:    newMetrics(),
+		audit:      audit,
+		corsOrigin: cfg.CORSOrigin,
 	}, nil
 }
 
@@ -151,6 +154,16 @@ func body(r *http.Request) (io.ReadCloser, error) {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.metrics.requests.Add(1)
 
+	if s.corsOrigin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", s.corsOrigin)
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Content-Encoding, "+namespaceHeader)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+	}
+
 	// /metrics is unauthenticated so a scraper needs no account.
 	if r.URL.Path == "/metrics" {
 		s.metrics.write(w)
@@ -195,8 +208,12 @@ func (s *Server) route(w *statusRecorder, r *http.Request, user User) {
 		s.block(w, r, user, strings.TrimPrefix(path, "blocks/"))
 	case strings.HasPrefix(path, "states/"):
 		s.state(w, r, strings.TrimPrefix(path, "states/"))
+	case path == "refs" && r.Method == http.MethodGet:
+		s.listRefs(w, r, user)
 	case strings.HasPrefix(path, "refs/"):
 		s.ref(w, r, user, strings.TrimPrefix(path, "refs/"))
+	case path == "whoami" && r.Method == http.MethodGet:
+		s.whoami(w, user)
 	case path == "admin/accounts" && r.Method == http.MethodGet:
 		s.listAccounts(w, user)
 	case path == "admin/accounts" && r.Method == http.MethodPost:
@@ -776,4 +793,50 @@ func (s *Server) ListenAndServeTLS(addr, certFile, keyFile string) error {
 	srv := &http.Server{Addr: addr, Handler: s}
 	fmt.Fprintf(os.Stderr, "remote: serving %s on %s (TLS)\n", s.root, addr)
 	return srv.ListenAndServeTLS(certFile, keyFile)
+}
+
+// whoami describes the calling account: identity, namespaces and quota usage.
+func (s *Server) whoami(w http.ResponseWriter, user User) {
+	usage := map[string]int64{}
+	if b, err := os.ReadFile(s.usagePath()); err == nil {
+		_ = json.Unmarshal(b, &usage)
+	}
+	writeJSON(w, map[string]any{
+		"name":        user.Name,
+		"admin":       user.Admin,
+		"teams":       user.Teams,
+		"quota_bytes": user.QuotaBytes,
+		"used_bytes":  usage[user.Name],
+	})
+}
+
+// listRefs returns every ref in the request's namespace, with the state id
+// each one points at.
+func (s *Server) listRefs(w http.ResponseWriter, r *http.Request, user User) {
+	namespace, allowed := s.resolveNamespace(r, user)
+	if !allowed {
+		http.Error(w, "not a member of that namespace", http.StatusForbidden)
+		return
+	}
+	type refEntry struct {
+		Name string `json:"name"`
+		ID   string `json:"id"`
+	}
+	refs := make([]refEntry, 0)
+	entries, err := os.ReadDir(filepath.Join(s.root, "refs", namespace))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !refName.MatchString(e.Name()) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(s.root, "refs", namespace, e.Name()))
+		if err != nil {
+			continue
+		}
+		refs = append(refs, refEntry{Name: e.Name(), ID: strings.TrimSpace(string(data))})
+	}
+	writeJSON(w, map[string]any{"namespace": namespace, "refs": refs})
 }
