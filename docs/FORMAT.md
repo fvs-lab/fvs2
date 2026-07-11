@@ -1,7 +1,7 @@
 # On-disk format
 
 This document specifies the FVS repository format and the guarantees that come
-with it. The current format is **2**. Everything under `.fvs2/` is covered;
+with it. The current format is **3**. Everything under `.fvs2/` is covered;
 anything not described here is an implementation detail.
 
 ## Layout
@@ -43,6 +43,29 @@ dedup, so they are fixed at `init`.
 
 `min == avg == max` degenerates to fixed-size chunking, which is how format 1
 repos are processed by the same code path.
+
+## Block encoding at rest
+
+Blocks are identified by the BLAKE3 of their **uncompressed** content, but
+stored zstd-compressed when that wins (readers sniff the zstd magic, so raw
+legacy blocks stay readable and incompressible content stays raw). Ids, dedup
+and the remote protocol never see compression: it is purely a storage detail.
+
+## Metadata trees (format 3)
+
+Format 3 moves a state's file list out of the commit document and into
+**tree objects**: one content-addressed object per directory, stored in the
+same block store as file content. A tree object is a JSON array of entries
+(`n` name, `k` kind: `f`/`d`/`l`, `m` mode, `s` size, `t` mtime, `b` blocks,
+`z` block sizes, `l` link target, `d` child tree id), sorted by name. An
+unchanged directory hashes to the same object across states, so metadata
+deduplicates exactly like content, and gc and sync treat tree objects as
+ordinary blocks. The commit document keeps only `root_tree`, `file_count` and
+`total_size`.
+
+Format 2 repositories (inline `files` in the commit document) remain fully
+readable and can still be created with `fvs2 init --format 2` for consumers
+that pin older tooling.
 
 ## States
 

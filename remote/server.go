@@ -442,7 +442,27 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		http.ServeFile(w, r, s.statePath(id))
+		if r.URL.Query().Get("expand") == "" {
+			http.ServeFile(w, r, s.statePath(id))
+			return
+		}
+		doc, err := os.ReadFile(s.statePath(id))
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		files, err := ExpandStateFiles(s.blocks, doc)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		var full map[string]any
+		if err := json.Unmarshal(doc, &full); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		full["files"] = files
+		writeJSON(w, full)
 	case http.MethodPut:
 		rd, err := body(r)
 		if err != nil {
@@ -675,18 +695,12 @@ func (s *Server) gc(w http.ResponseWriter, r *http.Request, user User) {
 		if err != nil {
 			return nil // dangling ref: nothing to mark
 		}
-		var commit struct {
-			Files []struct {
-				Blocks []core.BlockID `json:"blocks"`
-			} `json:"files"`
+		blocks, err := CollectStateBlocks(s.blocks, doc)
+		if err != nil {
+			return fmt.Errorf("state %.12s: %w", id, err)
 		}
-		if err := json.Unmarshal(doc, &commit); err != nil {
-			return nil
-		}
-		for _, f := range commit.Files {
-			for _, b := range f.Blocks {
-				liveBlocks[b] = true
-			}
+		for _, b := range blocks {
+			liveBlocks[b] = true
 		}
 		return nil
 	})

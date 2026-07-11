@@ -18,7 +18,7 @@ import (
 // CurrentFormat is the repo format written by Init. Format 1 (implicit when
 // the field is absent) uses fixed-size blocks; format 2 uses content-defined
 // chunking and records per-block sizes in commits.
-const CurrentFormat = 2
+const CurrentFormat = 3
 
 type Config struct {
 	// Format is the on-disk repo format version. 0 means 1 (legacy).
@@ -62,7 +62,53 @@ type Commit struct {
 	TimeUTC   int64       `json:"time_utc"`
 	Message   string      `json:"message"`
 	BlockSize int         `json:"block_size"`
-	Files     []FileEntry `json:"files"`
+	Files     []FileEntry `json:"files,omitempty"`
+	// RootTree points at the state's root tree object in the block store
+	// (format >= 3); Files stays inline in older formats.
+	RootTree  core.BlockID `json:"root_tree,omitempty"`
+	FileCount int          `json:"file_count,omitempty"`
+	TotalSize int64        `json:"total_size,omitempty"`
+}
+
+// CommitFiles returns the state's flattened file list regardless of format.
+func CommitFiles(store *core.DiskBlockStore, c Commit) ([]FileEntry, error) {
+	if c.RootTree == "" {
+		return c.Files, nil
+	}
+	return ReadTree(store, c.RootTree)
+}
+
+// CommitBlocks returns every block a state references: tree objects first
+// (format >= 3), then file content blocks, deduplicated.
+func CommitBlocks(store *core.DiskBlockStore, c Commit) ([]core.BlockID, error) {
+	seen := map[core.BlockID]bool{}
+	var out []core.BlockID
+	add := func(id core.BlockID) {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	files := c.Files
+	if c.RootTree != "" {
+		trees, err := TreeBlocks(store, c.RootTree)
+		if err != nil {
+			return nil, err
+		}
+		for _, t := range trees {
+			add(t)
+		}
+		files, err = ReadTree(store, c.RootTree)
+		if err != nil {
+			return nil, err
+		}
+	}
+	for _, f := range files {
+		for _, b := range f.Blocks {
+			add(b)
+		}
+	}
+	return out, nil
 }
 
 type FileEntry struct {
@@ -91,8 +137,17 @@ func indexPath(root string) string  { return filepath.Join(metaDir(root), "index
 func ensureDir(p string) error { return os.MkdirAll(p, 0o755) }
 
 func Init(root string, blockSize int) error {
+	return InitWithFormat(root, blockSize, CurrentFormat)
+}
+
+// InitWithFormat initializes a repo at a specific format, for consumers that
+// must stay readable by older tooling (legacy format 2).
+func InitWithFormat(root string, blockSize, format int) error {
 	if blockSize <= 0 {
 		blockSize = 4096
+	}
+	if format < 2 || format > CurrentFormat {
+		return fmt.Errorf("unsupported init format %d", format)
 	}
 	if err := ensureDir(blocksDir(root)); err != nil {
 		return err
@@ -103,7 +158,7 @@ func Init(root string, blockSize int) error {
 
 	params := core.DefaultChunkParams()
 	cfg := Config{
-		Format:    CurrentFormat,
+		Format:    format,
 		BlockSize: blockSize,
 		Chunking: &ChunkingConfig{
 			MinSize: params.Min,

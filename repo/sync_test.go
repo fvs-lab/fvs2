@@ -132,8 +132,10 @@ func TestPushDedupAcrossRepos(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if push.UploadedBlocks != 1 {
-		t.Fatalf("expected only the new file's block to upload, got %d of %d", push.UploadedBlocks, push.TotalBlocks)
+	// The shared 200 KiB content must not travel again: only the new file's
+	// block and the few changed tree objects may upload.
+	if push.UploadedBlocks > 4 || push.UploadedBlocks == push.TotalBlocks {
+		t.Fatalf("dedup failed: uploaded %d of %d blocks", push.UploadedBlocks, push.TotalBlocks)
 	}
 }
 

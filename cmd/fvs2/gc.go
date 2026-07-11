@@ -80,8 +80,13 @@ func (c *GcCmd) Run() error {
 	if err != nil {
 		return err
 	}
+	markStore, err := meta.NewBlockStore(root)
+	if err != nil {
+		return err
+	}
 
-	// Mark: every block reachable from an indexed state is live.
+	// Mark: every block reachable from an indexed state is live, tree
+	// objects included.
 	live := map[core.BlockID]bool{}
 	indexed := map[string]bool{}
 	for _, sum := range idx.Commits {
@@ -90,10 +95,12 @@ func (c *GcCmd) Run() error {
 		if err != nil {
 			return fmt.Errorf("load state %s: %w", sum.ID[:12], err)
 		}
-		for _, f := range commit.Files {
-			for _, b := range f.Blocks {
-				live[b] = true
-			}
+		blocks, err := meta.CommitBlocks(markStore, commit)
+		if err != nil {
+			return fmt.Errorf("walk state %s: %w", sum.ID[:12], err)
+		}
+		for _, b := range blocks {
+			live[b] = true
 		}
 	}
 

@@ -73,6 +73,7 @@ func (c *CLI) Before() error {
 
 type InitCmd struct {
 	BlockSize int  `cli:"block-size" default:"4096" help:"block size in bytes"`
+	Format    int  `cli:"format" default:"3" help:"on-disk format (2 = legacy inline metadata)"`
 	Root      *CLI `internal:"ignore"`
 }
 
@@ -81,7 +82,7 @@ func (c *InitCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	repository, err := fvsrepo.Init(root, c.BlockSize)
+	repository, err := fvsrepo.InitFormat(root, c.BlockSize, c.Format)
 	if err != nil {
 		return err
 	}
@@ -371,8 +372,16 @@ func computeDirty(root, headCommit string) (bool, int, error) {
 	if c.Format < 2 {
 		params = core.FixedChunkParams(c.BlockSize)
 	}
-	want := make(map[string]meta.FileEntry, len(c.Files))
-	for _, fe := range c.Files {
+	store, err := meta.NewBlockStore(root)
+	if err != nil {
+		return false, 0, err
+	}
+	commitList, err := meta.CommitFiles(store, c)
+	if err != nil {
+		return false, 0, err
+	}
+	want := make(map[string]meta.FileEntry, len(commitList))
+	for _, fe := range commitList {
 		want[fe.Path] = fe
 	}
 	got, err := snapshotIDs(root, params)

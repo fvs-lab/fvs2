@@ -75,6 +75,10 @@ func Restore(root, state string, opts RestoreOptions) (RestoreResult, error) {
 	if err != nil {
 		return RestoreResult{}, err
 	}
+	commitFiles, err := meta.CommitFiles(store, commit)
+	if err != nil {
+		return RestoreResult{}, err
+	}
 
 	dest := root
 	if opts.To != "" {
@@ -83,11 +87,11 @@ func Restore(root, state string, opts RestoreOptions) (RestoreResult, error) {
 			return RestoreResult{}, err
 		}
 	}
-	if err := restoreCommit(dest, store, commit, opts.Verbose); err != nil {
+	if err := restoreCommit(dest, store, commitFiles, opts.Verbose); err != nil {
 		return RestoreResult{}, err
 	}
 	if opts.Clean {
-		if err := cleanDest(dest, commit, opts.Verbose); err != nil {
+		if err := cleanDest(dest, commitFiles, opts.Verbose); err != nil {
 			return RestoreResult{}, err
 		}
 	}
@@ -99,8 +103,8 @@ func Restore(root, state string, opts RestoreOptions) (RestoreResult, error) {
 	return RestoreResult{StateID: id, Dest: dest}, nil
 }
 
-func restoreCommit(dest string, store core.BlockStore, c meta.Commit, verbose io.Writer) error {
-	for _, fe := range c.Files {
+func restoreCommit(dest string, store core.BlockStore, files []meta.FileEntry, verbose io.Writer) error {
+	for _, fe := range files {
 		outPath := filepath.Join(dest, filepath.FromSlash(fe.Path))
 		if strings.HasPrefix(filepath.Clean(outPath), filepath.Join(dest, ".fvs2")) {
 			continue
@@ -172,9 +176,9 @@ func restoreCommit(dest string, store core.BlockStore, c meta.Commit, verbose io
 // cleanDest removes any file or symlink under dest that is not part of the
 // restored commit, then prunes the directories left empty. The .fvs2 metadata
 // directory is always preserved.
-func cleanDest(dest string, c meta.Commit, verbose io.Writer) error {
-	want := make(map[string]bool, len(c.Files))
-	for _, fe := range c.Files {
+func cleanDest(dest string, files []meta.FileEntry, verbose io.Writer) error {
+	want := make(map[string]bool, len(files))
+	for _, fe := range files {
 		want[filepath.Clean(filepath.Join(dest, filepath.FromSlash(fe.Path)))] = true
 	}
 	metaPath := filepath.Join(dest, ".fvs2")

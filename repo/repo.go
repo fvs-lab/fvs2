@@ -29,7 +29,40 @@ type CommitResult struct {
 	FileCount int
 }
 
+// FileEntry aliases the state file entry for external consumers.
+type FileEntry = meta.FileEntry
+
+// StateFiles returns the flattened file list of a state, whatever the repo
+// format.
+func StateFiles(root, id string) ([]FileEntry, error) {
+	root, err := absolute(root)
+	if err != nil {
+		return nil, err
+	}
+	commit, err := meta.LoadCommit(root, id)
+	if err != nil {
+		return nil, err
+	}
+	store, err := meta.NewBlockStore(root)
+	if err != nil {
+		return nil, err
+	}
+	return meta.CommitFiles(store, commit)
+}
+
+// InitFormat initializes a repository pinned to an explicit on-disk format.
+func InitFormat(root string, blockSize, format int) (Repository, error) {
+	return initRepo(root, blockSize, format)
+}
+
 func Init(root string, blockSize int) (Repository, error) {
+	return initRepo(root, blockSize, meta.CurrentFormat)
+}
+
+func initRepo(root string, blockSize, format int) (Repository, error) {
+	if format == 0 {
+		format = meta.CurrentFormat
+	}
 	root, err := absolute(root)
 	if err != nil {
 		return Repository{}, err
@@ -42,7 +75,7 @@ func Init(root string, blockSize int) (Repository, error) {
 	} else if !errors.Is(err, meta.ErrNotInitialized) {
 		return Repository{}, err
 	}
-	if err := meta.Init(root, blockSize); err != nil {
+	if err := meta.InitWithFormat(root, blockSize, format); err != nil {
 		return Repository{}, err
 	}
 	cfg, err := meta.LoadConfig(root)
@@ -83,8 +116,12 @@ func Commit(root, message string, allowEmpty bool, verbose io.Writer) (CommitRes
 			return CommitResult{}, err
 		}
 		head = &commit
-		headFiles = make(map[string]meta.FileEntry, len(commit.Files))
-		for _, file := range commit.Files {
+		headList, err := meta.CommitFiles(store, commit)
+		if err != nil {
+			return CommitResult{}, err
+		}
+		headFiles = make(map[string]meta.FileEntry, len(headList))
+		for _, file := range headList {
 			headFiles[file.Path] = file
 		}
 	}
@@ -99,7 +136,20 @@ func Commit(root, message string, allowEmpty bool, verbose io.Writer) (CommitRes
 
 	now := time.Now().UTC()
 	id := meta.NewCommitID(now, message, files)
-	commit := meta.Commit{ID: id, Format: cfg.Format, TimeUTC: now.Unix(), Message: message, BlockSize: cfg.BlockSize, Files: files}
+	commit := meta.Commit{ID: id, Format: cfg.Format, TimeUTC: now.Unix(), Message: message, BlockSize: cfg.BlockSize}
+	if cfg.Format >= 3 {
+		rootTree, err := meta.WriteTree(store, files)
+		if err != nil {
+			return CommitResult{}, err
+		}
+		commit.RootTree = rootTree
+		commit.FileCount = len(files)
+		for _, f := range files {
+			commit.TotalSize += f.Size
+		}
+	} else {
+		commit.Files = files
+	}
 	if err := writeJSONAtomic(meta.CommitPath(root, id), commit); err != nil {
 		return CommitResult{}, err
 	}
@@ -118,11 +168,15 @@ func Commit(root, message string, allowEmpty bool, verbose io.Writer) (CommitRes
 }
 
 func result(commit meta.Commit, created bool) CommitResult {
+	count := commit.FileCount
+	if commit.RootTree == "" {
+		count = len(commit.Files)
+	}
 	return CommitResult{
 		StateID:   commit.ID,
 		Created:   created,
 		CreatedAt: time.Unix(commit.TimeUTC, 0).UTC(),
-		FileCount: len(commit.Files),
+		FileCount: count,
 	}
 }
 

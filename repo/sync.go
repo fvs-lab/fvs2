@@ -31,18 +31,8 @@ type PullResult struct {
 	UpToDate         bool
 }
 
-func stateBlocks(commit meta.Commit) []core.BlockID {
-	seen := map[core.BlockID]bool{}
-	var out []core.BlockID
-	for _, f := range commit.Files {
-		for _, b := range f.Blocks {
-			if !seen[b] {
-				seen[b] = true
-				out = append(out, b)
-			}
-		}
-	}
-	return out
+func stateBlocks(store *core.DiskBlockStore, commit meta.Commit) ([]core.BlockID, error) {
+	return meta.CommitBlocks(store, commit)
 }
 
 // Push uploads the head state of branch to the remote: only blocks the remote
@@ -91,7 +81,11 @@ func Push(root string, rm meta.Remote, branch string, force bool) (PushResult, e
 		return PushResult{}, err
 	}
 	if remoteID == id {
-		return PushResult{Branch: branch, StateID: id, TotalBlocks: len(stateBlocks(commit))}, nil
+		all, err := stateBlocks(store, commit)
+		if err != nil {
+			return PushResult{}, err
+		}
+		return PushResult{Branch: branch, StateID: id, TotalBlocks: len(all)}, nil
 	}
 	if remoteID != "" && !force {
 		if _, err := meta.LoadCommit(root, remoteID); err != nil {
@@ -100,7 +94,10 @@ func Push(root string, rm meta.Remote, branch string, force bool) (PushResult, e
 		}
 	}
 
-	blocks := stateBlocks(commit)
+	blocks, err := stateBlocks(store, commit)
+	if err != nil {
+		return PushResult{}, err
+	}
 	missing, err := client.MissingBlocks(blocks)
 	if err != nil {
 		return PushResult{}, err
@@ -180,7 +177,14 @@ func Pull(root string, rm meta.Remote, branch string) (PullResult, error) {
 	if err != nil {
 		return PullResult{}, err
 	}
-	blocks := stateBlocks(commit)
+	downloadedTrees, err := fetchTrees(store, client, commit)
+	if err != nil {
+		return PullResult{}, err
+	}
+	blocks, err := stateBlocks(store, commit)
+	if err != nil {
+		return PullResult{}, err
+	}
 	var wanted []core.BlockID
 	for _, b := range blocks {
 		ok, err := store.Has(b)
@@ -191,7 +195,7 @@ func Pull(root string, rm meta.Remote, branch string) (PullResult, error) {
 			wanted = append(wanted, b)
 		}
 	}
-	downloaded := 0
+	downloaded := downloadedTrees
 	if err := client.FetchBlocks(wanted, func(_ core.BlockID, data []byte) error {
 		if _, err := store.Put(data); err != nil {
 			return err
@@ -231,4 +235,53 @@ func Pull(root string, rm meta.Remote, branch string) (PullResult, error) {
 		TotalBlocks:      len(blocks),
 		DownloadedBlocks: downloaded,
 	}, nil
+}
+
+// fetchTrees walks a format-3 state's tree objects, fetching the missing ones
+// level by level so CommitBlocks can then resolve the full file list locally.
+func fetchTrees(store *core.DiskBlockStore, client *remote.Client, commit meta.Commit) (int, error) {
+	if commit.RootTree == "" {
+		return 0, nil
+	}
+	downloaded := 0
+	pending := []core.BlockID{commit.RootTree}
+	for len(pending) > 0 {
+		var missing []core.BlockID
+		for _, id := range pending {
+			ok, err := store.Has(id)
+			if err != nil {
+				return downloaded, err
+			}
+			if !ok {
+				missing = append(missing, id)
+			}
+		}
+		if err := client.FetchBlocks(missing, func(_ core.BlockID, data []byte) error {
+			if _, err := store.Put(data); err != nil {
+				return err
+			}
+			downloaded++
+			return nil
+		}); err != nil {
+			return downloaded, err
+		}
+		var next []core.BlockID
+		for _, id := range pending {
+			blob, err := store.Get(id)
+			if err != nil {
+				return downloaded, err
+			}
+			var entries []meta.TreeEntry
+			if err := json.Unmarshal(blob, &entries); err != nil {
+				return downloaded, fmt.Errorf("tree %s: %w", id, err)
+			}
+			for _, e := range entries {
+				if e.Kind == "d" {
+					next = append(next, e.Tree)
+				}
+			}
+		}
+		pending = next
+	}
+	return downloaded, nil
 }
