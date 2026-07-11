@@ -180,3 +180,7 @@ func (b *s3Backend) List() ([]BlockInfo, error) {
 	}
 	return out, nil
 }
+
+// NewFSBackend opens a filesystem block store rooted at dir, for embedders
+// that share one store across several Servers.
+func NewFSBackend(dir string) (BlockBackend, error) { return newFSBackend(dir) }
