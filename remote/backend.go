@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	core "fvs-v2-core"
@@ -56,22 +57,52 @@ func (b *fsBackend) Put(data []byte) (core.BlockID, error) { return b.store.Put(
 func (b *fsBackend) Delete(id core.BlockID) error          { return b.store.Delete(id) }
 
 func (b *fsBackend) List() ([]BlockInfo, error) {
+	// The store enumerates loose and packed chunks alike; loose files carry
+	// their own mtime, packed chunks inherit the pack file's.
+	packTimes := map[string]timeAndOk{}
 	entries, err := os.ReadDir(b.dir)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]BlockInfo, 0, len(entries))
+	looseTimes := map[core.BlockID]timeAndOk{}
 	for _, e := range entries {
-		if e.IsDir() || !hexID.MatchString(e.Name()) {
-			continue
-		}
 		info, err := e.Info()
 		if err != nil {
 			continue
 		}
-		out = append(out, BlockInfo{ID: core.BlockID(e.Name()), Size: info.Size(), ModTime: info.ModTime()})
+		if hexID.MatchString(e.Name()) {
+			looseTimes[core.BlockID(e.Name())] = timeAndOk{info.ModTime(), true}
+		} else if strings.HasPrefix(e.Name(), "pack-") {
+			packTimes[e.Name()] = timeAndOk{info.ModTime(), true}
+		}
 	}
-	return out, nil
+	var newestPack timeAndOk
+	for _, t := range packTimes {
+		if !newestPack.ok || t.t.After(newestPack.t) {
+			newestPack = t
+		}
+	}
+	var out []BlockInfo
+	err = b.store.ForEach(func(id core.BlockID) error {
+		size, err := b.store.Size(id)
+		if err != nil {
+			return nil
+		}
+		info := BlockInfo{ID: id, Size: size}
+		if t, ok := looseTimes[id]; ok {
+			info.ModTime = t.t
+		} else if newestPack.ok {
+			info.ModTime = newestPack.t
+		}
+		out = append(out, info)
+		return nil
+	})
+	return out, err
+}
+
+type timeAndOk struct {
+	t  time.Time
+	ok bool
 }
 
 // S3Config configures an S3-compatible block backend (AWS S3, MinIO,
