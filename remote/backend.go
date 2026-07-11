@@ -226,3 +226,18 @@ type Compacter interface {
 func (b *fsBackend) Compact(orderedLive []core.BlockID) error {
 	return b.store.Compact(orderedLive)
 }
+
+// DiskUsage reports the real bytes the store occupies, packs included.
+func (b *fsBackend) DiskUsage() (int64, error) {
+	entries, err := os.ReadDir(b.dir)
+	if err != nil {
+		return 0, err
+	}
+	var total int64
+	for _, e := range entries {
+		if info, err := e.Info(); err == nil && !e.IsDir() {
+			total += info.Size()
+		}
+	}
+	return total, nil
+}
