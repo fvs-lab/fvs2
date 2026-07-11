@@ -13,6 +13,7 @@ import (
 // Servers use it for gc marking and for expanding state documents.
 func CollectStateBlocks(blocks BlockBackend, doc []byte) ([]core.BlockID, error) {
 	var commit struct {
+		Format   int          `json:"format"`
 		RootTree core.BlockID `json:"root_tree"`
 		Files    []struct {
 			Blocks []core.BlockID `json:"blocks"`
@@ -20,6 +21,12 @@ func CollectStateBlocks(blocks BlockBackend, doc []byte) ([]core.BlockID, error)
 	}
 	if err := json.Unmarshal(doc, &commit); err != nil {
 		return nil, err
+	}
+	// A state written by newer tooling may reference blocks through
+	// structures this build cannot see: treating it as empty would let gc
+	// destroy live data, so refuse instead.
+	if commit.Format > meta.CurrentFormat {
+		return nil, fmt.Errorf("state format %d is newer than this build supports (max %d)", commit.Format, meta.CurrentFormat)
 	}
 	seen := map[core.BlockID]bool{}
 	var out []core.BlockID
