@@ -27,7 +27,23 @@ type TreeEntry struct {
 	Sizes   []int64        `json:"z,omitempty"`
 	Link    string         `json:"l,omitempty"`
 	Tree    core.BlockID   `json:"d,omitempty"`
+	// Manifest points at the file's chunk list stored as its own
+	// content-addressed object. Long chunk lists move there so an edit to
+	// one file does not re-serialize its siblings' lists into the parent
+	// tree object.
+	Manifest core.BlockID `json:"mf,omitempty"`
 }
+
+// manifest is the indirect chunk list of one file.
+type manifest struct {
+	Blocks []core.BlockID `json:"b"`
+	Sizes  []int64        `json:"z,omitempty"`
+}
+
+// manifestThreshold is the chunk count above which a file's list moves into
+// a manifest object; short lists stay inline, where indirection would cost
+// more than it saves.
+const manifestThreshold = 2
 
 // WriteTree stores the file list as tree objects, bottom-up, and returns the
 // root tree id. Unchanged subtrees dedup naturally through content
@@ -59,6 +75,18 @@ func WriteTree(store *core.DiskBlockStore, files []FileEntry) (core.BlockID, err
 		if f.Link != "" {
 			entry.Kind = "l"
 			entry.Link = f.Link
+			entry.Blocks = nil
+			entry.Sizes = nil
+		} else if len(entry.Blocks) > manifestThreshold {
+			blob, err := json.Marshal(manifest{Blocks: entry.Blocks, Sizes: entry.Sizes})
+			if err != nil {
+				return "", err
+			}
+			id, err := store.Put(blob)
+			if err != nil {
+				return "", err
+			}
+			entry.Manifest = id
 			entry.Blocks = nil
 			entry.Sizes = nil
 		}
@@ -116,9 +144,21 @@ func ReadTree(store *core.DiskBlockStore, id core.BlockID) ([]FileEntry, error) 
 			case "l":
 				out = append(out, FileEntry{Path: full, Mode: e.Mode, ModTime: e.ModTime, Link: e.Link})
 			default:
+				blocks, sizes := e.Blocks, e.Sizes
+				if e.Manifest != "" {
+					blob, err := store.Get(e.Manifest)
+					if err != nil {
+						return fmt.Errorf("manifest %s: %w", e.Manifest, err)
+					}
+					var m manifest
+					if err := json.Unmarshal(blob, &m); err != nil {
+						return fmt.Errorf("manifest %s: %w", e.Manifest, err)
+					}
+					blocks, sizes = m.Blocks, m.Sizes
+				}
 				out = append(out, FileEntry{
 					Path: full, Mode: e.Mode, Size: e.Size, ModTime: e.ModTime,
-					Blocks: e.Blocks, BlockSizes: e.Sizes,
+					Blocks: blocks, BlockSizes: sizes,
 				})
 			}
 		}
@@ -151,6 +191,9 @@ func TreeBlocks(store *core.DiskBlockStore, id core.BlockID) ([]core.BlockID, er
 				if err := walk(e.Tree); err != nil {
 					return err
 				}
+			}
+			if e.Manifest != "" {
+				out = append(out, e.Manifest)
 			}
 		}
 		return nil

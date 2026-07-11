@@ -273,11 +273,16 @@ func fetchTrees(store *core.DiskBlockStore, client *remote.Client, commit meta.C
 			}
 			var entries []meta.TreeEntry
 			if err := json.Unmarshal(blob, &entries); err != nil {
-				return downloaded, fmt.Errorf("tree %s: %w", id, err)
+				// A pending id may be a manifest object rather than a tree:
+				// it carries no children, so nothing further to walk.
+				continue
 			}
 			for _, e := range entries {
 				if e.Kind == "d" {
 					next = append(next, e.Tree)
+				}
+				if e.Manifest != "" {
+					next = append(next, e.Manifest)
 				}
 			}
 		}

@@ -69,12 +69,12 @@ func ExpandStateFiles(blocks BlockBackend, doc []byte) ([]meta.FileEntry, error)
 	return expandTree(blocks, commit.RootTree, func(core.BlockID) {})
 }
 
-func expandTree(blocks BlockBackend, root core.BlockID, visitTree func(core.BlockID)) ([]meta.FileEntry, error) {
+func expandTree(blocksBackend BlockBackend, root core.BlockID, visitTree func(core.BlockID)) ([]meta.FileEntry, error) {
 	var out []meta.FileEntry
 	var walk func(prefix string, tree core.BlockID) error
 	walk = func(prefix string, tree core.BlockID) error {
 		visitTree(tree)
-		blob, err := blocks.Get(tree)
+		blob, err := blocksBackend.Get(tree)
 		if err != nil {
 			return fmt.Errorf("tree %s: %w", tree, err)
 		}
@@ -95,9 +95,25 @@ func expandTree(blocks BlockBackend, root core.BlockID, visitTree func(core.Bloc
 			case "l":
 				out = append(out, meta.FileEntry{Path: full, Mode: e.Mode, ModTime: e.ModTime, Link: e.Link})
 			default:
+				blocks, sizes := e.Blocks, e.Sizes
+				if e.Manifest != "" {
+					visitTree(e.Manifest)
+					mblob, err := blocksBackend.Get(e.Manifest)
+					if err != nil {
+						return fmt.Errorf("manifest %s: %w", e.Manifest, err)
+					}
+					var m struct {
+						Blocks []core.BlockID `json:"b"`
+						Sizes  []int64        `json:"z"`
+					}
+					if err := json.Unmarshal(mblob, &m); err != nil {
+						return fmt.Errorf("manifest %s: %w", e.Manifest, err)
+					}
+					blocks, sizes = m.Blocks, m.Sizes
+				}
 				out = append(out, meta.FileEntry{
 					Path: full, Mode: e.Mode, Size: e.Size, ModTime: e.ModTime,
-					Blocks: e.Blocks, BlockSizes: e.Sizes,
+					Blocks: blocks, BlockSizes: sizes,
 				})
 			}
 		}
