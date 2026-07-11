@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"sync"
 )
@@ -77,12 +78,44 @@ func (a *accounts) insert(u User) error {
 
 func (a *accounts) authenticate(token string) (User, bool) {
 	a.mu.RLock()
-	defer a.mu.RUnlock()
 	if a.open {
+		a.mu.RUnlock()
 		return User{Name: "default", Admin: true}, true
 	}
 	u, ok := a.byToken[token]
+	a.mu.RUnlock()
+	if ok || a.path == "" {
+		return u, ok
+	}
+	// Unknown token with a backing file: another server process may have
+	// added the account. Reload once and retry.
+	a.mu.Lock()
+	_ = a.reloadLocked()
+	u, ok = a.byToken[token]
+	a.mu.Unlock()
 	return u, ok
+}
+
+// reloadLocked replaces the in-memory account set with the backing file's
+// content. Callers hold the write lock.
+func (a *accounts) reloadLocked() error {
+	users, err := LoadUsers(a.path)
+	if err != nil {
+		return err
+	}
+	byToken := map[string]User{}
+	byName := map[string]User{}
+	for _, u := range users {
+		if err := validateUser(u); err != nil {
+			return err
+		}
+		byToken[u.Token] = u
+		byName[u.Name] = u
+	}
+	a.byToken = byToken
+	a.byName = byName
+	a.open = len(byName) == 0
+	return nil
 }
 
 // allows reports whether the account may use the given ref namespace: its own
@@ -99,29 +132,47 @@ func (a *accounts) allows(u User, namespace string) bool {
 	return false
 }
 
-func (a *accounts) add(u User) error {
+// mutate runs fn on the freshest account set, under a file lock when a
+// backing file exists so concurrent server processes serialize their changes.
+func (a *accounts) mutate(fn func() error) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if _, exists := a.byName[u.Name]; exists {
-		return fmt.Errorf("account already exists: %s", u.Name)
+	if a.path == "" {
+		return fn()
 	}
-	if err := a.insert(u); err != nil {
-		return err
-	}
-	a.open = false
-	return a.save()
+	return withFileLock(a.path+".lock", func() error {
+		if _, err := os.Stat(a.path); err == nil {
+			if err := a.reloadLocked(); err != nil {
+				return err
+			}
+		}
+		return fn()
+	})
+}
+
+func (a *accounts) add(u User) error {
+	return a.mutate(func() error {
+		if _, exists := a.byName[u.Name]; exists {
+			return fmt.Errorf("account already exists: %s", u.Name)
+		}
+		if err := a.insert(u); err != nil {
+			return err
+		}
+		a.open = false
+		return a.save()
+	})
 }
 
 func (a *accounts) remove(name string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	u, exists := a.byName[name]
-	if !exists {
-		return fmt.Errorf("account not found: %s", name)
-	}
-	delete(a.byToken, u.Token)
-	delete(a.byName, name)
-	return a.save()
+	return a.mutate(func() error {
+		u, exists := a.byName[name]
+		if !exists {
+			return fmt.Errorf("account not found: %s", name)
+		}
+		delete(a.byToken, u.Token)
+		delete(a.byName, name)
+		return a.save()
+	})
 }
 
 func (a *accounts) list() []User {

@@ -13,7 +13,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	core "fvs-v2-core"
@@ -46,9 +45,6 @@ type Server struct {
 	limiter  *rateLimiter
 	metrics  *metrics
 	audit    *auditLog
-
-	mu    sync.Mutex // guards usage and gc
-	usage map[string]int64
 }
 
 // NewServer serves a remote from root. token == "" leaves the server open;
@@ -101,19 +97,14 @@ func NewServerConfig(cfg Config) (*Server, error) {
 		return nil, err
 	}
 
-	s := &Server{
+	return &Server{
 		root:     cfg.Root,
 		blocks:   blocks,
 		accounts: accts,
 		limiter:  newRateLimiter(cfg.RatePerSec, cfg.RateBurst),
 		metrics:  newMetrics(),
 		audit:    audit,
-		usage:    map[string]int64{},
-	}
-	if err := s.loadUsage(); err != nil {
-		return nil, err
-	}
-	return s, nil
+	}, nil
 }
 
 var (
@@ -123,31 +114,30 @@ var (
 
 func (s *Server) usagePath() string { return filepath.Join(s.root, "usage.json") }
 
-func (s *Server) loadUsage() error {
-	b, err := os.ReadFile(s.usagePath())
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(b, &s.usage)
-}
-
 // chargeNewBytes reserves n bytes of quota for account; it fails without
-// charging when the quota would be exceeded.
+// charging when the quota would be exceeded. The read-modify-write happens
+// under a file lock, so every server process sharing this root sees one
+// consistent counter.
 func (s *Server) chargeNewBytes(u User, n int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if u.QuotaBytes > 0 && s.usage[u.Name]+n > u.QuotaBytes {
-		return fmt.Errorf("quota exceeded: %d of %d bytes used", s.usage[u.Name], u.QuotaBytes)
-	}
-	s.usage[u.Name] += n
-	b, err := json.MarshalIndent(s.usage, "", "  ")
-	if err != nil {
-		return err
-	}
-	return writeFileAtomic(s.usagePath(), append(b, '\n'))
+	return withFileLock(filepath.Join(s.root, "usage.lock"), func() error {
+		usage := map[string]int64{}
+		if b, err := os.ReadFile(s.usagePath()); err == nil {
+			if err := json.Unmarshal(b, &usage); err != nil {
+				return err
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if u.QuotaBytes > 0 && usage[u.Name]+n > u.QuotaBytes {
+			return fmt.Errorf("quota exceeded: %d of %d bytes used", usage[u.Name], u.QuotaBytes)
+		}
+		usage[u.Name] += n
+		b, err := json.MarshalIndent(usage, "", "  ")
+		if err != nil {
+			return err
+		}
+		return writeFileAtomic(s.usagePath(), append(b, '\n'))
+	})
 }
 
 // body returns the request body, transparently decompressing gzip uploads.
@@ -509,24 +499,31 @@ func (s *Server) ref(w http.ResponseWriter, r *http.Request, user User, name str
 			http.Error(w, "invalid state id", http.StatusBadRequest)
 			return
 		}
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		cur := ""
-		if data, err := os.ReadFile(refPath); err == nil {
-			cur = strings.TrimSpace(string(data))
-		} else if !errors.Is(err, os.ErrNotExist) {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		// The compare-and-swap runs under a file lock shared by every server
+		// process on this root, so concurrent pushes through different
+		// instances still serialize.
+		conflictID := ""
+		err = withFileLock(filepath.Join(s.root, "refs", ".lock"), func() error {
+			cur := ""
+			if data, err := os.ReadFile(refPath); err == nil {
+				cur = strings.TrimSpace(string(data))
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			if cur != req.Old {
+				conflictID = cur
+				return errRefConflict
+			}
+			if err := os.MkdirAll(filepath.Dir(refPath), 0o755); err != nil {
+				return err
+			}
+			return writeFileAtomic(refPath, []byte(req.ID+"\n"))
+		})
+		if errors.Is(err, errRefConflict) {
+			writeJSONStatus(w, http.StatusConflict, map[string]string{"id": conflictID})
 			return
 		}
-		if cur != req.Old {
-			writeJSONStatus(w, http.StatusConflict, map[string]string{"id": cur})
-			return
-		}
-		if err := os.MkdirAll(filepath.Dir(refPath), 0o755); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if err := writeFileAtomic(refPath, []byte(req.ID+"\n")); err != nil {
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -603,12 +600,17 @@ func (s *Server) gc(w http.ResponseWriter, r *http.Request, user User) {
 	}
 	cutoff := time.Now().Add(-grace)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// One gc at a time across every server process on this root.
+	unlock, err := acquireFileLock(filepath.Join(s.root, "gc.lock"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer unlock()
 
 	liveStates := map[string]bool{}
 	liveBlocks := map[core.BlockID]bool{}
-	err := filepath.WalkDir(filepath.Join(s.root, "refs"), func(path string, d os.DirEntry, err error) error {
+	err = filepath.WalkDir(filepath.Join(s.root, "refs"), func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}

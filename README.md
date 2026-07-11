@@ -161,8 +161,9 @@ under 100 ms.
 
 Remotes are production-grade: HTTPS, runtime-managed accounts with quotas and
 team namespaces, S3-compatible block storage, compressed batched transfers,
-server-side garbage collection, Prometheus metrics, an audit log and per-account
-rate limiting. The protocol and its guarantees are in
+server-side garbage collection, Prometheus metrics, an audit log, per-account
+rate limiting, and several server instances can share one storage root behind
+a load balancer. The protocol and its guarantees are in
 [docs/REMOTE.md](docs/REMOTE.md). Multiple repositories compose into one
 reproducible mounted stack with [layered environments](docs/ENVIRONMENTS.md).
 

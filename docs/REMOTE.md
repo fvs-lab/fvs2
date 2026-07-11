@@ -58,6 +58,17 @@ fvs2 remote user remove deck
 Changes persist to the `--accounts` file. The admin endpoints are also
 available directly under `/v1/admin/accounts`.
 
+## Running several instances
+
+Every mutation that needs coordination, the ref compare-and-swap, the quota
+counter, account changes and gc, serializes through file locks on the storage
+root, not process memory. Several `fvs2 serve` processes (on one machine, or
+on several machines sharing the root over a filesystem with working `flock`,
+e.g. local disk or NFSv4) can therefore serve the same remote behind a load
+balancer: concurrent pushes through different instances still resolve to one
+winner and one clean conflict, quotas stay consistent, and an account added on
+one node authenticates on the others immediately.
+
 ## Transport security
 
 Pass `--tls-cert` and `--tls-key` to serve HTTPS directly; without them the
