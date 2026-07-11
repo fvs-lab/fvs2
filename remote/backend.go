@@ -227,6 +227,12 @@ func (b *fsBackend) Compact(orderedLive []core.BlockID) error {
 	return b.store.Compact(orderedLive)
 }
 
+// CompactCold compacts with the cold-tier geometry: big frames, maximum
+// compression, for archived history.
+func (b *fsBackend) CompactCold(orderedLive []core.BlockID) error {
+	return b.store.CompactOptions(orderedLive, core.ColdPackOptions())
+}
+
 // DiskUsage reports the real bytes the store occupies, packs included.
 func (b *fsBackend) DiskUsage() (int64, error) {
 	entries, err := os.ReadDir(b.dir)
