@@ -184,3 +184,14 @@ func (b *s3Backend) List() ([]BlockInfo, error) {
 // NewFSBackend opens a filesystem block store rooted at dir, for embedders
 // that share one store across several Servers.
 func NewFSBackend(dir string) (BlockBackend, error) { return newFSBackend(dir) }
+
+// Compacter is implemented by backends that support pack compaction: the
+// caller passes the full live set in lineage order and the backend rewrites
+// itself around it (frame amnesty).
+type Compacter interface {
+	Compact(orderedLive []core.BlockID) error
+}
+
+func (b *fsBackend) Compact(orderedLive []core.BlockID) error {
+	return b.store.Compact(orderedLive)
+}
