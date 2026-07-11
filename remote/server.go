@@ -35,6 +35,16 @@ type Config struct {
 	RateBurst    int          // rate limiter burst
 	AuditFile    string       // append-only audit log; "" disables
 	CORSOrigin   string       // Access-Control-Allow-Origin value; "" disables CORS
+
+	// FixedNamespace pins every ref request to one namespace, for embedders
+	// that scope a whole Server to a single repository.
+	FixedNamespace string
+	// RefUpdateHook observes successful ref writes and deletions, so an
+	// embedder can keep a reflog with the acting account.
+	RefUpdateHook func(account, ref, old, new string)
+	// DisableGC refuses the gc endpoint, for embedders whose block store is
+	// shared beyond this Server's reachability view.
+	DisableGC bool
 }
 
 // Server is the reference implementation of the FVS remote protocol. See
@@ -47,6 +57,10 @@ type Server struct {
 	metrics    *metrics
 	audit      *auditLog
 	corsOrigin string
+
+	fixedNamespace string
+	refUpdateHook  func(account, ref, old, new string)
+	disableGC      bool
 }
 
 // NewServer serves a remote from root. token == "" leaves the server open;
@@ -100,13 +114,16 @@ func NewServerConfig(cfg Config) (*Server, error) {
 	}
 
 	return &Server{
-		root:       cfg.Root,
-		blocks:     blocks,
-		accounts:   accts,
-		limiter:    newRateLimiter(cfg.RatePerSec, cfg.RateBurst),
-		metrics:    newMetrics(),
-		audit:      audit,
-		corsOrigin: cfg.CORSOrigin,
+		root:           cfg.Root,
+		blocks:         blocks,
+		accounts:       accts,
+		limiter:        newRateLimiter(cfg.RatePerSec, cfg.RateBurst),
+		metrics:        newMetrics(),
+		audit:          audit,
+		corsOrigin:     cfg.CORSOrigin,
+		fixedNamespace: cfg.FixedNamespace,
+		refUpdateHook:  cfg.RefUpdateHook,
+		disableGC:      cfg.DisableGC,
 	}, nil
 }
 
@@ -455,6 +472,9 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request, id string) {
 // resolveNamespace picks the ref namespace for a request and checks the
 // account may use it.
 func (s *Server) resolveNamespace(r *http.Request, user User) (string, bool) {
+	if s.fixedNamespace != "" {
+		return s.fixedNamespace, true
+	}
 	ns := r.Header.Get(namespaceHeader)
 	if ns == "" {
 		ns = user.Name
@@ -546,6 +566,10 @@ func (s *Server) ref(w http.ResponseWriter, r *http.Request, user User, name str
 		}
 		w.WriteHeader(http.StatusNoContent)
 	case http.MethodDelete:
+		cur := ""
+		if data, err := os.ReadFile(refPath); err == nil {
+			cur = strings.TrimSpace(string(data))
+		}
 		err := os.Remove(refPath)
 		if errors.Is(err, os.ErrNotExist) {
 			http.NotFound(w, r)
@@ -554,6 +578,9 @@ func (s *Server) ref(w http.ResponseWriter, r *http.Request, user User, name str
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if s.refUpdateHook != nil {
+			s.refUpdateHook(user.Name, name, cur, "")
 		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
@@ -602,6 +629,10 @@ func (s *Server) removeAccount(w http.ResponseWriter, user User, name string) {
 // than the grace window are swept, so a push in flight (blocks uploaded, ref
 // not moved yet) is never collected. Admin only.
 func (s *Server) gc(w http.ResponseWriter, r *http.Request, user User) {
+	if s.disableGC {
+		http.Error(w, "gc is managed by the embedding server", http.StatusForbidden)
+		return
+	}
 	if !user.Admin {
 		http.Error(w, "admin only", http.StatusForbidden)
 		return
