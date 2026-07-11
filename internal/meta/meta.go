@@ -21,6 +21,11 @@ import (
 const CurrentFormat = 3
 
 type Config struct {
+	// ChunkingPolicy selects how chunk parameters are chosen per file.
+	// Policy 0 always uses the repo parameters; policy 1 sniffs text content
+	// (a format-defined, content-only rule) and chunks it finer. The policy
+	// affects chunk boundaries, so it is part of the format.
+	ChunkingPolicy int `json:"chunking_policy,omitempty"`
 	// Format is the on-disk repo format version. 0 means 1 (legacy).
 	Format    int `json:"format,omitempty"`
 	BlockSize int `json:"block_size"`
@@ -68,6 +73,9 @@ type Commit struct {
 	RootTree  core.BlockID `json:"root_tree,omitempty"`
 	FileCount int          `json:"file_count,omitempty"`
 	TotalSize int64        `json:"total_size,omitempty"`
+	// ChunkingPolicy records the policy the state was chunked under, so
+	// readers and future migrations never have to guess boundaries.
+	ChunkingPolicy int `json:"chunking_policy,omitempty"`
 }
 
 // CommitFiles returns the state's flattened file list regardless of format.
@@ -142,6 +150,15 @@ func Init(root string, blockSize int) error {
 
 // InitWithFormat initializes a repo at a specific format, for consumers that
 // must stay readable by older tooling (legacy format 2).
+// policyForFormat pins new repos to the adaptive policy; legacy formats keep
+// the fixed parameters older tooling expects.
+func policyForFormat(format int) int {
+	if format >= 3 {
+		return 1
+	}
+	return 0
+}
+
 func InitWithFormat(root string, blockSize, format int) error {
 	if blockSize <= 0 {
 		blockSize = 4096
@@ -158,8 +175,9 @@ func InitWithFormat(root string, blockSize, format int) error {
 
 	params := core.DefaultChunkParams()
 	cfg := Config{
-		Format:    format,
-		BlockSize: blockSize,
+		ChunkingPolicy: policyForFormat(format),
+		Format:         format,
+		BlockSize:      blockSize,
 		Chunking: &ChunkingConfig{
 			MinSize: params.Min,
 			AvgSize: params.Avg,

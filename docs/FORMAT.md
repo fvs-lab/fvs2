@@ -44,6 +44,19 @@ dedup, so they are fixed at `init`.
 `min == avg == max` degenerates to fixed-size chunking, which is how format 1
 repos are processed by the same code path.
 
+## Chunking policy
+
+Any parameter that influences chunk boundaries is part of the format,
+versioned, and recorded in the state document (`chunking_policy`). Policy 0
+uses the repository parameters for every file. Policy 1 (default for format
+3 repositories) sniffs the first 8 KiB of each file: content with no NUL
+byte and at least 70% printable bytes chunks with a fine text target
+(min 1 KiB, avg 4 KiB, max 16 KiB); everything else keeps the repository
+parameters. The rule depends only on content, never on the file name, so
+identical content chunks identically everywhere and dedup survives renames.
+A file that changes classification between versions re-chunks from scratch
+for that transition; determinism is worth that rare, single-file cost.
+
 ## Block encoding at rest
 
 Blocks are identified by the BLAKE3 of their **uncompressed** content, but
@@ -120,5 +133,7 @@ A state (commit) document:
 
 - Commit documents are uncompressed JSON; metadata size grows with file count
   (see the benchmarks). Packing metadata is planned and will be a format bump.
-- The store has no refcounting; space is reclaimed only by `gc`.
+- The store has no refcounting; space is reclaimed only by `gc` (which, on
+  packed repositories, rewrites the store around the live set: see
+  [docs/PACK.md](PACK.md)).
 - Nothing in the format is encrypted or authenticated beyond content hashes.

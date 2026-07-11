@@ -126,7 +126,7 @@ func Commit(root, message string, allowEmpty bool, verbose io.Writer) (CommitRes
 		}
 	}
 
-	files, err := snapshot(root, store, cfg.ChunkParams(), headFiles, verbose)
+	files, err := snapshot(root, store, cfg.ChunkParams(), cfg.ChunkingPolicy, headFiles, verbose)
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -136,7 +136,7 @@ func Commit(root, message string, allowEmpty bool, verbose io.Writer) (CommitRes
 
 	now := time.Now().UTC()
 	id := meta.NewCommitID(now, message, files)
-	commit := meta.Commit{ID: id, Format: cfg.Format, TimeUTC: now.Unix(), Message: message, BlockSize: cfg.BlockSize}
+	commit := meta.Commit{ID: id, Format: cfg.Format, TimeUTC: now.Unix(), Message: message, BlockSize: cfg.BlockSize, ChunkingPolicy: cfg.ChunkingPolicy}
 	if cfg.Format >= 3 {
 		rootTree, err := meta.WriteTree(store, files)
 		if err != nil {
@@ -193,7 +193,7 @@ func absolute(path string) (string, error) {
 
 var errFileVanished = errors.New("file vanished")
 
-func snapshot(root string, store core.BlockStore, params core.ChunkParams, head map[string]meta.FileEntry, verbose io.Writer) ([]meta.FileEntry, error) {
+func snapshot(root string, store core.BlockStore, params core.ChunkParams, policy int, head map[string]meta.FileEntry, verbose io.Writer) ([]meta.FileEntry, error) {
 	var files []meta.FileEntry
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -255,7 +255,7 @@ func snapshot(root string, store core.BlockStore, params core.ChunkParams, head 
 		if verbose != nil {
 			fmt.Fprintf(verbose, "hashing: %s\n", rel)
 		}
-		blocks, sizes, size, err := putFileBlocks(path, store, params)
+		blocks, sizes, size, err := putFileBlocks(path, store, params, policy)
 		if errors.Is(err, errFileVanished) {
 			return nil
 		}
@@ -272,7 +272,20 @@ func snapshot(root string, store core.BlockStore, params core.ChunkParams, head 
 	return files, nil
 }
 
-func putFileBlocks(path string, store core.BlockStore, params core.ChunkParams) ([]core.BlockID, []int64, int64, error) {
+func putFileBlocks(path string, store core.BlockStore, params core.ChunkParams, policy int) ([]core.BlockID, []int64, int64, error) {
+	if policy >= 1 {
+		head := make([]byte, 8192)
+		f, err := os.Open(path)
+		if os.IsNotExist(err) {
+			return nil, nil, 0, errFileVanished
+		}
+		if err != nil {
+			return nil, nil, 0, err
+		}
+		n, _ := io.ReadFull(f, head)
+		_ = f.Close()
+		params = core.ParamsForContent(policy, params, head[:n])
+	}
 	return ChunkFile(path, params, store.Put)
 }
 

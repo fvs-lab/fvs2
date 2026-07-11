@@ -34,6 +34,7 @@ type CLI struct {
 	Pull     PullCmd     `cmd:"pull" help:"Download a branch head from a remote"`
 	Serve    ServeCmd    `cmd:"serve" help:"Serve a directory as an FVS remote"`
 	Env      EnvCmd      `cmd:"env" help:"Compose reproducible multi-layer environments"`
+	Pack     PackCmd     `cmd:"pack" help:"Compact the store into lineage-ordered pack frames"`
 
 	clibuilder.Base
 }
@@ -68,6 +69,7 @@ func (c *CLI) Before() error {
 	c.Env.Verify.Root = c
 	c.Env.Sync.Root = c
 	c.Env.Plan.Root = c
+	c.Pack.Root = c
 	return nil
 }
 

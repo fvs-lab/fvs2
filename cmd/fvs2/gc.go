@@ -123,10 +123,24 @@ func (c *GcCmd) Run() error {
 		}
 	}
 
-	// Sweep: delete every stored block nothing references anymore.
+	// Sweep: with packs present the amnesty path rewrites the store around
+	// the live set; otherwise dead loose blocks are deleted one by one.
 	store, err := meta.NewBlockStore(root)
 	if err != nil {
 		return err
+	}
+	if packed, err := store.HasPacks(); err != nil {
+		return err
+	} else if packed && !c.DryRun {
+		ordered, err := meta.OrderedLiveBlocks(root, markStore)
+		if err != nil {
+			return err
+		}
+		if err := store.Compact(ordered); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stdout, "ok: repacked around %d live blocks, %d orphan docs removed"+"\n", len(ordered), orphanDocs)
+		return nil
 	}
 	removed := 0
 	var freed int64
