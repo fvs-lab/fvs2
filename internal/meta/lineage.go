@@ -18,6 +18,7 @@ func OrderedLiveBlocks(root string, store *core.DiskBlockStore) ([]core.BlockID,
 	}
 
 	perPath := map[string][]core.BlockID{}
+	pathSeen := map[string]bool{}
 	var paths []string
 	var metaObjects []core.BlockID
 	seen := map[core.BlockID]bool{}
@@ -33,7 +34,8 @@ func OrderedLiveBlocks(root string, store *core.DiskBlockStore) ([]core.BlockID,
 			return nil, err
 		}
 		for _, f := range files {
-			if _, ok := perPath[f.Path]; !ok {
+			if !pathSeen[f.Path] {
+				pathSeen[f.Path] = true
 				paths = append(paths, f.Path)
 			}
 			for _, b := range f.Blocks {
