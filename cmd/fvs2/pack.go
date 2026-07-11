@@ -5,10 +5,12 @@ import (
 	"os"
 	"time"
 
+	core "fvs-v2-core"
 	"fvs2/internal/meta"
 )
 
 type PackCmd struct {
+	Cold bool `cli:"cold" help:"cold tier: 4 MiB frames, maximum compression (best for archived history)"`
 	Root *CLI `internal:"ignore"`
 }
 
@@ -38,7 +40,11 @@ func (c *PackCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	if err := store.Compact(ordered); err != nil {
+	opts := core.PackOptions{}
+	if c.Cold {
+		opts = core.ColdPackOptions()
+	}
+	if err := store.CompactOptions(ordered, opts); err != nil {
 		return err
 	}
 	after, err := storeBytes(root)
