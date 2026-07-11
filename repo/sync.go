@@ -12,6 +12,10 @@ import (
 	"fvs2/remote"
 )
 
+// Remote aliases the remote configuration so external embedders can drive
+// Push and Pull without reaching into internal packages.
+type Remote = meta.Remote
+
 type PushResult struct {
 	Branch         string
 	StateID        string
