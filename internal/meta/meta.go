@@ -150,6 +150,15 @@ type FileEntry struct {
 
 var ErrNotInitialized = errors.New("repo not initialized (run: fvs2 init)")
 
+// Sentinel errors for callers that classify failures (the mount daemon maps
+// them to RPC codes). Wrapped with %w, so errors.Is works through the
+// contextual messages.
+var (
+	ErrStateNotFound     = errors.New("state not found")
+	ErrLockTimeout       = errors.New("repo lock timeout")
+	ErrFormatUnsupported = errors.New("repo format not supported by this build")
+)
+
 func metaDir(root string) string    { return filepath.Join(root, ".fvs2") }
 func blocksDir(root string) string  { return filepath.Join(metaDir(root), "blocks") }
 func commitsDir(root string) string { return filepath.Join(metaDir(root), "commits") }
@@ -238,7 +247,7 @@ func LoadConfig(root string) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Format > CurrentFormat {
-		return Config{}, fmt.Errorf("repo format %d is not supported by this build (max %d)", cfg.Format, CurrentFormat)
+		return Config{}, fmt.Errorf("repo format %d (max %d): %w", cfg.Format, CurrentFormat, ErrFormatUnsupported)
 	}
 	if cfg.BlockSize <= 0 {
 		cfg.BlockSize = 4096
@@ -272,6 +281,9 @@ func CommitPath(root, id string) string {
 func LoadCommit(root, id string) (Commit, error) {
 	b, err := os.ReadFile(CommitPath(root, id))
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Commit{}, fmt.Errorf("%w: %s", ErrStateNotFound, id)
+		}
 		return Commit{}, err
 	}
 	var c Commit
@@ -297,7 +309,7 @@ func ResolveCommitID(root, prefix string) (string, error) {
 	}
 	sort.Strings(hits)
 	if len(hits) == 0 {
-		return "", fmt.Errorf("state not found: %s", prefix)
+		return "", fmt.Errorf("%w: %s", ErrStateNotFound, prefix)
 	}
 	if len(hits) > 1 {
 		return "", fmt.Errorf("ambiguous state prefix: %s", prefix)
@@ -326,7 +338,7 @@ func DeleteCommit(root, id string) error {
 		kept = append(kept, c)
 	}
 	if !found {
-		return fmt.Errorf("state not found: %s", id)
+		return fmt.Errorf("%w: %s", ErrStateNotFound, id)
 	}
 	idx.Commits = kept
 	if err := SaveIndex(root, idx); err != nil {

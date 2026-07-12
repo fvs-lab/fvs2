@@ -38,7 +38,7 @@ func LockRepo(root string, timeout time.Duration) (*RepoLock, error) {
 		}
 		if time.Now().After(deadline) {
 			_ = f.Close()
-			return nil, fmt.Errorf("repo is locked by another process (lock: %s)", lockPath(root))
+			return nil, fmt.Errorf("repo is locked by another process (lock: %s): %w", lockPath(root), ErrLockTimeout)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
