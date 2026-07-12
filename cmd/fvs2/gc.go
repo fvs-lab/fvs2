@@ -86,16 +86,18 @@ func (c *GcCmd) Run() error {
 	}
 
 	// Mark: every block reachable from an indexed state is live, tree
-	// objects included.
+	// objects included. One decoded-tree cache spans the whole mark phase, so
+	// directories shared across states decode once.
 	live := map[core.BlockID]bool{}
 	indexed := map[string]bool{}
+	cache := meta.NewTreeCache()
 	for _, sum := range idx.Commits {
 		indexed[sum.ID] = true
 		commit, err := meta.LoadCommit(root, sum.ID)
 		if err != nil {
 			return fmt.Errorf("load state %s: %w", sum.ID[:12], err)
 		}
-		blocks, err := meta.CommitBlocks(markStore, commit)
+		blocks, err := meta.CommitBlocksCached(markStore, commit, cache)
 		if err != nil {
 			return fmt.Errorf("walk state %s: %w", sum.ID[:12], err)
 		}

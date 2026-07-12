@@ -24,16 +24,17 @@ func OrderedLiveBlocks(root string, store *core.DiskBlockStore) ([]core.BlockID,
 	seen := map[core.BlockID]bool{}
 	seenMeta := map[core.BlockID]bool{}
 
+	cache := NewTreeCache()
 	for _, sum := range index.Commits {
 		commit, err := LoadCommit(root, sum.ID)
 		if err != nil {
 			return nil, err
 		}
-		files, err := CommitFiles(store, commit)
+		reach, err := CommitReach(store, commit, cache)
 		if err != nil {
 			return nil, err
 		}
-		for _, f := range files {
+		for _, f := range reach.Files {
 			if !pathSeen[f.Path] {
 				pathSeen[f.Path] = true
 				paths = append(paths, f.Path)
@@ -45,16 +46,10 @@ func OrderedLiveBlocks(root string, store *core.DiskBlockStore) ([]core.BlockID,
 				}
 			}
 		}
-		if commit.RootTree != "" {
-			trees, err := TreeBlocks(store, commit.RootTree)
-			if err != nil {
-				return nil, err
-			}
-			for _, t := range trees {
-				if !seenMeta[t] {
-					seenMeta[t] = true
-					metaObjects = append(metaObjects, t)
-				}
+		for _, t := range reach.MetaBlocks {
+			if !seenMeta[t] {
+				seenMeta[t] = true
+				metaObjects = append(metaObjects, t)
 			}
 		}
 	}

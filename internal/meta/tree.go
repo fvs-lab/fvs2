@@ -15,6 +15,17 @@ import (
 // the same object across states, so metadata deduplicates like file content
 // does. The commit document shrinks to a pointer at the root tree.
 
+// BlockGetter is the read-side dependency of tree operations: any
+// content-addressed store that can fetch a block by id works.
+type BlockGetter interface {
+	Get(id core.BlockID) ([]byte, error)
+}
+
+// BlockPutter is the write-side dependency of tree operations.
+type BlockPutter interface {
+	Put(data []byte) (core.BlockID, error)
+}
+
 // TreeEntry is one child of a tree object. Kind is "f" (file), "d"
 // (directory) or "l" (symlink).
 type TreeEntry struct {
@@ -45,10 +56,73 @@ type manifest struct {
 // more than it saves.
 const manifestThreshold = 2
 
+// TreeCache memoizes decoded tree and manifest objects for the duration of
+// one command: unchanged directories shared across states decode once, so
+// gc, push and pull stop re-reading the same objects per state.
+type TreeCache struct {
+	trees     map[core.BlockID][]TreeEntry
+	manifests map[core.BlockID]manifest
+}
+
+func NewTreeCache() *TreeCache {
+	return &TreeCache{
+		trees:     map[core.BlockID][]TreeEntry{},
+		manifests: map[core.BlockID]manifest{},
+	}
+}
+
+// tree returns the decoded, name-validated entries of one tree object.
+func (c *TreeCache) tree(store BlockGetter, id core.BlockID) ([]TreeEntry, error) {
+	if c != nil {
+		if entries, ok := c.trees[id]; ok {
+			return entries, nil
+		}
+	}
+	blob, err := store.Get(id)
+	if err != nil {
+		return nil, fmt.Errorf("tree %s: %w", id, err)
+	}
+	var entries []TreeEntry
+	if err := json.Unmarshal(blob, &entries); err != nil {
+		return nil, fmt.Errorf("tree %s: %w", id, err)
+	}
+	for _, e := range entries {
+		// Tree objects are untrusted: a hostile name ("..", "a/b") could
+		// steer a restore outside its destination.
+		if err := ValidateEntryName(e.Name); err != nil {
+			return nil, fmt.Errorf("tree %s: %w", id, err)
+		}
+	}
+	if c != nil {
+		c.trees[id] = entries
+	}
+	return entries, nil
+}
+
+func (c *TreeCache) manifest(store BlockGetter, id core.BlockID) (manifest, error) {
+	if c != nil {
+		if m, ok := c.manifests[id]; ok {
+			return m, nil
+		}
+	}
+	blob, err := store.Get(id)
+	if err != nil {
+		return manifest{}, fmt.Errorf("manifest %s: %w", id, err)
+	}
+	var m manifest
+	if err := json.Unmarshal(blob, &m); err != nil {
+		return manifest{}, fmt.Errorf("manifest %s: %w", id, err)
+	}
+	if c != nil {
+		c.manifests[id] = m
+	}
+	return m, nil
+}
+
 // WriteTree stores the file list as tree objects, bottom-up, and returns the
 // root tree id. Unchanged subtrees dedup naturally through content
 // addressing.
-func WriteTree(store *core.DiskBlockStore, files []FileEntry) (core.BlockID, error) {
+func WriteTree(store BlockPutter, files []FileEntry) (core.BlockID, error) {
 	children := map[string][]TreeEntry{}
 	dirs := map[string]bool{"": true}
 
@@ -120,26 +194,25 @@ func WriteTree(store *core.DiskBlockStore, files []FileEntry) (core.BlockID, err
 	return ids[""], nil
 }
 
-// ReadTree flattens the tree rooted at id back into the format-2 file list
-// shape every consumer already understands.
-func ReadTree(store *core.DiskBlockStore, id core.BlockID) ([]FileEntry, error) {
-	var out []FileEntry
+// Reach is one traversal's result: the flattened file list plus every
+// metadata object (tree and manifest ids) the walk visited.
+type Reach struct {
+	Files      []FileEntry
+	MetaBlocks []core.BlockID
+}
+
+// walkTree flattens the tree rooted at id in a single pass, collecting the
+// metadata object ids as it goes. cache may be nil.
+func walkTree(store BlockGetter, id core.BlockID, cache *TreeCache) (Reach, error) {
+	var out Reach
 	var walk func(prefix string, tree core.BlockID) error
 	walk = func(prefix string, tree core.BlockID) error {
-		blob, err := store.Get(tree)
+		out.MetaBlocks = append(out.MetaBlocks, tree)
+		entries, err := cache.tree(store, tree)
 		if err != nil {
-			return fmt.Errorf("tree %s: %w", tree, err)
-		}
-		var entries []TreeEntry
-		if err := json.Unmarshal(blob, &entries); err != nil {
-			return fmt.Errorf("tree %s: %w", tree, err)
+			return err
 		}
 		for _, e := range entries {
-			// Tree objects are untrusted: a hostile name ("..", "a/b") could
-			// steer a restore outside its destination.
-			if err := ValidateEntryName(e.Name); err != nil {
-				return fmt.Errorf("tree %s: %w", tree, err)
-			}
 			full := path.Join(prefix, e.Name)
 			switch e.Kind {
 			case "d":
@@ -147,21 +220,18 @@ func ReadTree(store *core.DiskBlockStore, id core.BlockID) ([]FileEntry, error) 
 					return err
 				}
 			case "l":
-				out = append(out, FileEntry{Path: full, Mode: e.Mode, ModTime: e.ModTime, Link: e.Link})
+				out.Files = append(out.Files, FileEntry{Path: full, Mode: e.Mode, ModTime: e.ModTime, Link: e.Link})
 			default:
 				blocks, sizes := e.Blocks, e.Sizes
 				if e.Manifest != "" {
-					blob, err := store.Get(e.Manifest)
+					out.MetaBlocks = append(out.MetaBlocks, e.Manifest)
+					m, err := cache.manifest(store, e.Manifest)
 					if err != nil {
-						return fmt.Errorf("manifest %s: %w", e.Manifest, err)
-					}
-					var m manifest
-					if err := json.Unmarshal(blob, &m); err != nil {
-						return fmt.Errorf("manifest %s: %w", e.Manifest, err)
+						return err
 					}
 					blocks, sizes = m.Blocks, m.Sizes
 				}
-				out = append(out, FileEntry{
+				out.Files = append(out.Files, FileEntry{
 					Path: full, Mode: e.Mode, Size: e.Size, ModTime: e.ModTime,
 					Blocks: blocks, BlockSizes: sizes,
 				})
@@ -170,43 +240,30 @@ func ReadTree(store *core.DiskBlockStore, id core.BlockID) ([]FileEntry, error) 
 		return nil
 	}
 	if err := walk("", id); err != nil {
-		return nil, err
+		return Reach{}, err
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	sort.Slice(out.Files, func(i, j int) bool { return out.Files[i].Path < out.Files[j].Path })
 	return out, nil
 }
 
-// TreeBlocks collects every tree object id reachable from the root, for gc
-// marking and sync transfers.
-func TreeBlocks(store *core.DiskBlockStore, id core.BlockID) ([]core.BlockID, error) {
-	var out []core.BlockID
-	var walk func(tree core.BlockID) error
-	walk = func(tree core.BlockID) error {
-		out = append(out, tree)
-		blob, err := store.Get(tree)
-		if err != nil {
-			return fmt.Errorf("tree %s: %w", tree, err)
-		}
-		var entries []TreeEntry
-		if err := json.Unmarshal(blob, &entries); err != nil {
-			return fmt.Errorf("tree %s: %w", tree, err)
-		}
-		for _, e := range entries {
-			if e.Kind == "d" {
-				if err := walk(e.Tree); err != nil {
-					return err
-				}
-			}
-			if e.Manifest != "" {
-				out = append(out, e.Manifest)
-			}
-		}
-		return nil
-	}
-	if err := walk(id); err != nil {
+// ReadTree flattens the tree rooted at id back into the format-2 file list
+// shape every consumer already understands.
+func ReadTree(store BlockGetter, id core.BlockID) ([]FileEntry, error) {
+	reach, err := walkTree(store, id, nil)
+	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	return reach.Files, nil
+}
+
+// TreeBlocks collects every tree and manifest object id reachable from the
+// root, for gc marking and sync transfers.
+func TreeBlocks(store BlockGetter, id core.BlockID) ([]core.BlockID, error) {
+	reach, err := walkTree(store, id, nil)
+	if err != nil {
+		return nil, err
+	}
+	return reach.MetaBlocks, nil
 }
 
 func parentDir(d string) string {

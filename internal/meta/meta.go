@@ -79,39 +79,49 @@ type Commit struct {
 }
 
 // CommitFiles returns the state's flattened file list regardless of format.
-func CommitFiles(store *core.DiskBlockStore, c Commit) ([]FileEntry, error) {
-	if c.RootTree == "" {
-		return c.Files, nil
+func CommitFiles(store BlockGetter, c Commit) ([]FileEntry, error) {
+	reach, err := CommitReach(store, c, nil)
+	if err != nil {
+		return nil, err
 	}
-	return ReadTree(store, c.RootTree)
+	return reach.Files, nil
+}
+
+// CommitReach walks a state once, returning its flattened file list together
+// with every metadata object it references. cache (optional) lets one
+// command share decoded tree objects across states.
+func CommitReach(store BlockGetter, c Commit, cache *TreeCache) (Reach, error) {
+	if c.RootTree == "" {
+		return Reach{Files: c.Files}, nil
+	}
+	return walkTree(store, c.RootTree, cache)
 }
 
 // CommitBlocks returns every block a state references: tree objects first
 // (format >= 3), then file content blocks, deduplicated.
-func CommitBlocks(store *core.DiskBlockStore, c Commit) ([]core.BlockID, error) {
+func CommitBlocks(store BlockGetter, c Commit) ([]core.BlockID, error) {
+	return CommitBlocksCached(store, c, nil)
+}
+
+// CommitBlocksCached is CommitBlocks with a shared decoded-tree cache, for
+// callers walking many states in one command (gc, pack ordering).
+func CommitBlocksCached(store BlockGetter, c Commit, cache *TreeCache) ([]core.BlockID, error) {
+	reach, err := CommitReach(store, c, cache)
+	if err != nil {
+		return nil, err
+	}
 	seen := map[core.BlockID]bool{}
-	var out []core.BlockID
+	out := make([]core.BlockID, 0, len(reach.MetaBlocks))
 	add := func(id core.BlockID) {
 		if !seen[id] {
 			seen[id] = true
 			out = append(out, id)
 		}
 	}
-	files := c.Files
-	if c.RootTree != "" {
-		trees, err := TreeBlocks(store, c.RootTree)
-		if err != nil {
-			return nil, err
-		}
-		for _, t := range trees {
-			add(t)
-		}
-		files, err = ReadTree(store, c.RootTree)
-		if err != nil {
-			return nil, err
-		}
+	for _, t := range reach.MetaBlocks {
+		add(t)
 	}
-	for _, f := range files {
+	for _, f := range reach.Files {
 		for _, b := range f.Blocks {
 			add(b)
 		}
