@@ -11,11 +11,14 @@ import (
 )
 
 // rateLimiter is a per-account token bucket. A zero rate disables limiting.
+// Idle buckets are pruned so a stream of distinct accounts cannot grow the
+// map without bound.
 type rateLimiter struct {
 	ratePerSec float64
 	burst      float64
 	mu         sync.Mutex
 	buckets    map[string]*bucket
+	sweep      time.Time
 }
 
 type bucket struct {
@@ -50,6 +53,14 @@ func (r *rateLimiter) allow(account string) bool {
 		b.tokens = r.burst
 	}
 	b.last = now
+	if now.Sub(r.sweep) > time.Minute {
+		r.sweep = now
+		for k, v := range r.buckets {
+			if now.Sub(v.last) > 10*time.Minute {
+				delete(r.buckets, k)
+			}
+		}
+	}
 	if b.tokens < 1 {
 		return false
 	}

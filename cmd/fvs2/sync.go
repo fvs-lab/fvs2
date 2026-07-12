@@ -333,6 +333,10 @@ func (c *ServeCmd) Run() error {
 	}
 	defer server.Close()
 
+	if c.Accounts == "" && c.Token == "" {
+		fmt.Fprintf(os.Stderr, "warning: no accounts and no --token: every caller is an unauthenticated admin. Use --token or --accounts, and bind to a loopback or trusted address.\n")
+	}
+
 	if c.TLSCert != "" || c.TLSKey != "" {
 		if c.TLSCert == "" || c.TLSKey == "" {
 			return fmt.Errorf("both --tls-cert and --tls-key are required for HTTPS")

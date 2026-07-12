@@ -2,7 +2,7 @@
 
 **Fused Versioned Storage.** Time-travel for big data: snapshot, dedupe, mount.
 
-[![Go](https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go)](https://go.dev)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 FVS gives you git-style snapshots for large, mutable data (datasets, VM and disk
@@ -55,7 +55,11 @@ corruption or bit-rot instead of silently returning bad data.
 
 ## Install
 
+fvs2 depends on the `fvs-v2-core` block-store module, which lives in a sibling
+repo. Clone it alongside fvs2 (the `go.mod` `replace` points at `../core`):
+
 ```bash
+git clone https://github.com/fvs-lab/core.git ../core
 # CLI (static, CGO-free)
 CGO_ENABLED=0 go build -o ./bin/fvs2 ./cmd/fvs2
 ./bin/fvs2 --help
