@@ -25,6 +25,24 @@ const namespaceHeader = "X-Fvs-Namespace"
 // maxFrame bounds a single block frame in batch transfers.
 const maxFrame = 16 << 20
 
+// Request hardening caps. Raw bodies are bounded per endpoint with
+// http.MaxBytesReader; gzip uploads are additionally bounded on the
+// decompressed side, and batches on their frame count, so no request can
+// expand without limit. Variables (not constants) so tests can lower them.
+const (
+	maxJSONBody  = 64 << 20  // block id lists
+	maxStateBody = 256 << 20 // state documents
+	maxRefBody   = 1 << 20   // ref updates
+	maxBatchBody = 1 << 30   // raw (compressed) batch upload
+)
+
+var (
+	maxBatchFrames            = 8192
+	maxDecompressedPerRequest = int64(1 << 30)
+)
+
+var errBodyTooLarge = errors.New("request body exceeds the server limit")
+
 // Config configures a remote server.
 type Config struct {
 	Root         string       // local directory for states, refs and (by default) blocks
@@ -160,12 +178,42 @@ func (s *Server) chargeNewBytes(u User, n int64) error {
 	})
 }
 
-// body returns the request body, transparently decompressing gzip uploads.
-func body(r *http.Request) (io.ReadCloser, error) {
-	if r.Header.Get("Content-Encoding") == "gzip" {
-		return gzip.NewReader(r.Body)
+// cappedReader fails once more than remaining bytes stream through it,
+// bounding gzip expansion: a compressed bomb cannot tie up the server.
+type cappedReader struct {
+	r         io.Reader
+	remaining int64
+}
+
+func (c *cappedReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.remaining -= int64(n)
+	if c.remaining < 0 {
+		return n, errBodyTooLarge
 	}
-	return r.Body, nil
+	return n, err
+}
+
+type readCloser struct {
+	io.Reader
+	io.Closer
+}
+
+// body returns the request body, capped at limit raw bytes and transparently
+// decompressing gzip uploads (with a global decompressed-bytes cap).
+func body(w http.ResponseWriter, r *http.Request, limit int64) (io.ReadCloser, error) {
+	raw := http.MaxBytesReader(w, r.Body, limit)
+	if r.Header.Get("Content-Encoding") == "gzip" {
+		gz, err := gzip.NewReader(raw)
+		if err != nil {
+			return nil, err
+		}
+		return readCloser{
+			Reader: &cappedReader{r: gz, remaining: maxDecompressedPerRequest},
+			Closer: gz,
+		}, nil
+	}
+	return raw, nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -248,7 +296,7 @@ func (s *Server) route(w *statusRecorder, r *http.Request, user User) {
 // remote. This is the dedup primitive: a push only uploads what the remote
 // does not already have, whoever uploaded it first.
 func (s *Server) checkBlocks(w http.ResponseWriter, r *http.Request) {
-	rd, err := body(r)
+	rd, err := body(w, r, maxJSONBody)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -283,7 +331,7 @@ func (s *Server) checkBlocks(w http.ResponseWriter, r *http.Request) {
 // content-addressed on arrival; only bytes new to the store count against the
 // uploader's quota.
 func (s *Server) putBlocks(w http.ResponseWriter, r *http.Request, user User) {
-	rd, err := body(r)
+	rd, err := body(w, r, maxBatchBody)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -291,6 +339,7 @@ func (s *Server) putBlocks(w http.ResponseWriter, r *http.Request, user User) {
 	defer rd.Close()
 
 	added := 0
+	frames := 0
 	for {
 		data, err := readFrame(rd)
 		if errors.Is(err, io.EOF) {
@@ -298,6 +347,11 @@ func (s *Server) putBlocks(w http.ResponseWriter, r *http.Request, user User) {
 		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		frames++
+		if frames > maxBatchFrames {
+			http.Error(w, fmt.Sprintf("batch exceeds %d frames", maxBatchFrames), http.StatusRequestEntityTooLarge)
 			return
 		}
 		id := core.ContentID(data)
@@ -328,7 +382,7 @@ func (s *Server) putBlocks(w http.ResponseWriter, r *http.Request, user User) {
 // fetchBlocks streams the requested blocks back as length-prefixed frames, in
 // the requested order, gzip-compressed when the client accepts it.
 func (s *Server) fetchBlocks(w http.ResponseWriter, r *http.Request) {
-	rd, err := body(r)
+	rd, err := body(w, r, maxJSONBody)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -392,15 +446,22 @@ func (s *Server) block(w http.ResponseWriter, r *http.Request, user User, id str
 		_, _ = w.Write(data)
 		s.metrics.bytesServed.Add(int64(len(data)))
 	case http.MethodPut:
-		rd, err := body(r)
+		rd, err := body(w, r, maxFrame+1)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		defer rd.Close()
-		data, err := io.ReadAll(io.LimitReader(rd, maxFrame))
+		// Read one byte past the frame cap so an oversized body is rejected
+		// instead of silently truncated (which would fail the hash check with
+		// a misleading error).
+		data, err := io.ReadAll(io.LimitReader(rd, maxFrame+1))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(data) > maxFrame {
+			http.Error(w, fmt.Sprintf("block exceeds the %d byte frame limit", maxFrame), http.StatusRequestEntityTooLarge)
 			return
 		}
 		if string(core.ContentID(data)) != id {
@@ -470,13 +531,13 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request, id string) {
 		full["meta_blocks"] = metaBlocks
 		writeJSON(w, full)
 	case http.MethodPut:
-		rd, err := body(r)
+		rd, err := body(w, r, maxStateBody)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		defer rd.Close()
-		data, err := io.ReadAll(io.LimitReader(rd, 256<<20))
+		data, err := io.ReadAll(io.LimitReader(rd, maxStateBody))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -548,7 +609,7 @@ func (s *Server) ref(w http.ResponseWriter, r *http.Request, user User, name str
 		}
 		writeJSON(w, map[string]string{"id": strings.TrimSpace(string(data))})
 	case http.MethodPut:
-		rd, err := body(r)
+		rd, err := body(w, r, maxRefBody)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -561,7 +622,7 @@ func (s *Server) ref(w http.ResponseWriter, r *http.Request, user User, name str
 			// silently overwrite each other.
 			Old string `json:"old"`
 		}
-		if err := json.NewDecoder(io.LimitReader(rd, 1<<20)).Decode(&req); err != nil {
+		if err := json.NewDecoder(io.LimitReader(rd, maxRefBody)).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -849,19 +910,31 @@ func writeFileAtomicMode(path string, data []byte, mode os.FileMode) error {
 // Close releases server resources (the audit log).
 func (s *Server) Close() error { return s.audit.Close() }
 
+// httpServer builds the http.Server with request deadlines: generous enough
+// for large transfers on slow links, finite so a stalled client cannot hold
+// a connection forever.
+func (s *Server) httpServer(addr string) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           s,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Minute,
+		WriteTimeout:      15 * time.Minute,
+		IdleTimeout:       2 * time.Minute,
+	}
+}
+
 // ListenAndServe runs the server on addr over plain HTTP.
 func (s *Server) ListenAndServe(addr string) error {
-	srv := &http.Server{Addr: addr, Handler: s}
 	fmt.Fprintf(os.Stderr, "remote: serving %s on %s\n", s.root, addr)
-	return srv.ListenAndServe()
+	return s.httpServer(addr).ListenAndServe()
 }
 
 // ListenAndServeTLS runs the server on addr over HTTPS with the given
 // certificate and key.
 func (s *Server) ListenAndServeTLS(addr, certFile, keyFile string) error {
-	srv := &http.Server{Addr: addr, Handler: s}
 	fmt.Fprintf(os.Stderr, "remote: serving %s on %s (TLS)\n", s.root, addr)
-	return srv.ListenAndServeTLS(certFile, keyFile)
+	return s.httpServer(addr).ListenAndServeTLS(certFile, keyFile)
 }
 
 // whoami describes the calling account: identity, namespaces and quota usage.
