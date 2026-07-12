@@ -11,6 +11,7 @@ import (
 	"time"
 
 	core "fvs-v2-core"
+	"fvs2/attest"
 	"fvs2/internal/meta"
 	fvsrepo "fvs2/repo"
 
@@ -109,6 +110,7 @@ type CommitCmd struct {
 	Message    string `cli:"message,m" help:"commit message"`
 	Verbose    bool   `cli:"verbose,v" help:"print verbose logs"`
 	AllowEmpty bool   `cli:"allow-empty" help:"create a state even if nothing changed"`
+	NoSign     bool   `cli:"no-sign" help:"do not attach an author signature even if a key exists"`
 	Root       *CLI   `internal:"ignore"`
 }
 
@@ -130,7 +132,34 @@ func (c *CommitCmd) Run() error {
 		return nil
 	}
 	fmt.Fprintf(os.Stdout, "ok: commit %s (%d files)\n", result.StateID[:12], result.FileCount)
+	if !c.NoSign {
+		autoSignAuthor(root, result.StateID)
+	}
 	return nil
+}
+
+// autoSignAuthor attaches an author attestation to a freshly committed state
+// when the user has a signing identity. Authorship is asserted by the author
+// at creation, not by clicking a button on a forge; a state already carrying
+// this key's author signature is left alone.
+func autoSignAuthor(root, state string) {
+	key, err := loadKey()
+	if err != nil {
+		return
+	}
+	existing, _ := fvsrepo.LoadAttestations(root, state)
+	for _, a := range existing {
+		if a.Role == attest.RoleAuthor && a.Signer == key.Public() {
+			return
+		}
+	}
+	a, err := key.Sign(attest.Payload{State: state, Role: attest.RoleAuthor})
+	if err != nil {
+		return
+	}
+	if _, err := fvsrepo.StoreAttestation(root, a); err == nil {
+		fmt.Fprintf(os.Stdout, "signed as author %.16s\n", key.Public())
+	}
 }
 
 type StatesCmd struct {
