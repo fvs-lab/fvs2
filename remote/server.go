@@ -287,6 +287,12 @@ func (s *Server) route(w *statusRecorder, r *http.Request, user User) {
 		s.removeAccount(w, user, strings.TrimPrefix(path, "admin/accounts/"))
 	case path == "gc" && r.Method == http.MethodPost:
 		s.gc(w, r, user)
+	case path == "capabilities" && r.Method == http.MethodGet:
+		s.capabilities(w)
+	case path == "attestations/batch" && r.Method == http.MethodPost:
+		s.putAttestations(w, r)
+	case path == "attestations" && r.Method == http.MethodGet:
+		s.getAttestations(w, r)
 	default:
 		http.NotFound(w, r)
 	}

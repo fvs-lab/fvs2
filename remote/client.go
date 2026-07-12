@@ -11,6 +11,8 @@ import (
 	"time"
 
 	core "fvs-v2-core"
+
+	"fvs2/attest"
 )
 
 // batchBytes is the upload batch target: blocks are grouped until a batch
@@ -395,4 +397,51 @@ func (c *Client) ListUsers() ([]User, error) {
 		return nil, err
 	}
 	return out.Accounts, nil
+}
+
+// PutAttestations uploads a batch of attestations; the server keeps the ones
+// whose signatures verify. Returns how many were stored.
+func (c *Client) PutAttestations(list []attest.Attestation) (int, error) {
+	payload, err := json.Marshal(map[string]any{"attestations": list})
+	if err != nil {
+		return 0, err
+	}
+	resp, err := c.do(http.MethodPost, "/v1/attestations/batch", bytes.NewReader(payload), "application/json", "")
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, unexpected(resp)
+	}
+	var out struct {
+		Stored int `json:"stored"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0, err
+	}
+	return out.Stored, nil
+}
+
+// GetAttestations lists attestations, optionally for one state.
+func (c *Client) GetAttestations(state string) ([]attest.Attestation, error) {
+	path := "/v1/attestations"
+	if state != "" {
+		path += "?state=" + state
+	}
+	resp, err := c.do(http.MethodGet, path, nil, "", "")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, unexpected(resp)
+	}
+	var out struct {
+		Attestations []attest.Attestation `json:"attestations"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out.Attestations, nil
 }

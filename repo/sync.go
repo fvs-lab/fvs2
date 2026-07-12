@@ -8,6 +8,7 @@ import (
 	"time"
 
 	core "fvs-v2-core"
+	"fvs2/attest"
 	"fvs2/internal/meta"
 	"fvs2/remote"
 )
@@ -21,6 +22,7 @@ type PushResult struct {
 	StateID        string
 	TotalBlocks    int
 	UploadedBlocks int
+	Attestations   int
 }
 
 type PullResult struct {
@@ -28,6 +30,7 @@ type PullResult struct {
 	StateID          string
 	TotalBlocks      int
 	DownloadedBlocks int
+	Attestations     int
 	UpToDate         bool
 }
 
@@ -111,11 +114,13 @@ func Push(root string, rm meta.Remote, branch string, force bool) (PushResult, e
 	if err := client.PutRef(branch, id, remoteID); err != nil {
 		return PushResult{}, err
 	}
+	pushedAtt := pushAttestations(client, root, id)
 	return PushResult{
 		Branch:         branch,
 		StateID:        id,
 		TotalBlocks:    len(blocks),
 		UploadedBlocks: len(missing),
+		Attestations:   pushedAtt,
 	}, nil
 }
 
@@ -260,11 +265,13 @@ func Pull(root string, rm meta.Remote, branch string) (PullResult, error) {
 	if err := meta.WriteBranchHead(root, branch, id); err != nil {
 		return PullResult{}, err
 	}
+	pulledAtt := pullAttestations(client, root, id)
 	return PullResult{
 		Branch:           branch,
 		StateID:          id,
 		TotalBlocks:      len(blocks),
 		DownloadedBlocks: downloaded,
+		Attestations:     pulledAtt,
 	}, nil
 }
 
@@ -349,4 +356,38 @@ func fetchTrees(store *core.DiskBlockStore, client *remote.Client, commit meta.C
 		pending = next
 	}
 	return downloaded, nil
+}
+
+// pushAttestations uploads the local attestations for a state. Attestations
+// are an optional protocol family, so a server that does not support them
+// leaves the push unaffected.
+func pushAttestations(client *remote.Client, root, state string) int {
+	list, err := LoadAttestations(root, state)
+	if err != nil || len(list) == 0 {
+		return 0
+	}
+	n, err := client.PutAttestations(list)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// pullAttestations downloads and stores the attestations a remote holds for a
+// state. Only signature-valid ones are kept.
+func pullAttestations(client *remote.Client, root, state string) int {
+	list, err := client.GetAttestations(state)
+	if err != nil {
+		return 0
+	}
+	stored := 0
+	for _, a := range list {
+		if attest.Verify(a) != nil {
+			continue
+		}
+		if _, err := StoreAttestation(root, a); err == nil {
+			stored++
+		}
+	}
+	return stored
 }

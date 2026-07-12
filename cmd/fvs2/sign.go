@@ -1,14 +1,13 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 
 	"fvs2/attest"
 	"fvs2/internal/meta"
+	"fvs2/repo"
 )
 
 // keyPath is where the signing identity lives by default: one identity per
@@ -34,57 +33,6 @@ func loadKey() (attest.Key, error) {
 		return attest.Key{}, err
 	}
 	return attest.KeyFromSeedHex(string(b))
-}
-
-// attestDir holds the repo's local attestations, which sync with the repo.
-func attestDir(root string) string {
-	return filepath.Join(root, ".fvs2", "attestations")
-}
-
-// storeAttestation writes an attestation into the repo, content-addressed by
-// its id so re-signing the same thing dedups.
-func storeAttestation(root string, a attest.Attestation) (string, error) {
-	dir := attestDir(root)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	id := a.ID()
-	if err := os.WriteFile(filepath.Join(dir, id+".json"), a.Encode(), 0o644); err != nil {
-		return "", err
-	}
-	return id, nil
-}
-
-// loadAttestations reads every attestation in the repo, optionally filtered
-// to one state id.
-func loadAttestations(root, state string) ([]attest.Attestation, error) {
-	entries, err := os.ReadDir(attestDir(root))
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var out []attest.Attestation
-	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
-			continue
-		}
-		b, err := os.ReadFile(filepath.Join(attestDir(root), e.Name()))
-		if err != nil {
-			continue
-		}
-		var a attest.Attestation
-		if json.Unmarshal(b, &a) != nil {
-			continue
-		}
-		if state != "" && a.State != state {
-			continue
-		}
-		out = append(out, a)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].SignedAt < out[j].SignedAt })
-	return out, nil
 }
 
 // ---- key management ----
@@ -162,7 +110,7 @@ func (c *SignCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	aid, err := storeAttestation(root, a)
+	aid, err := repo.StoreAttestation(root, a)
 	if err != nil {
 		return err
 	}
@@ -207,7 +155,7 @@ func (c *AttestLsCmd) Run() error {
 			return err
 		}
 	}
-	list, err := loadAttestations(root, filter)
+	list, err := repo.LoadAttestations(root, filter)
 	if err != nil {
 		return err
 	}
@@ -242,7 +190,7 @@ func (c *AttestVerifyCmd) Run() error {
 			return err
 		}
 	}
-	list, err := loadAttestations(root, filter)
+	list, err := repo.LoadAttestations(root, filter)
 	if err != nil {
 		return err
 	}
