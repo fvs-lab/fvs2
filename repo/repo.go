@@ -2,6 +2,7 @@ package repo
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -86,6 +87,12 @@ func initRepo(root string, blockSize, format int) (Repository, error) {
 }
 
 func Commit(root, message string, allowEmpty bool, verbose io.Writer) (CommitResult, error) {
+	return CommitContext(context.Background(), root, message, allowEmpty, verbose)
+}
+
+// CommitContext is Commit with cancellation: the snapshot walk checks ctx
+// between files and between chunks, so a daemon can abort a long snapshot.
+func CommitContext(ctx context.Context, root, message string, allowEmpty bool, verbose io.Writer) (CommitResult, error) {
 	root, err := absolute(root)
 	if err != nil {
 		return CommitResult{}, err
@@ -126,7 +133,7 @@ func Commit(root, message string, allowEmpty bool, verbose io.Writer) (CommitRes
 		}
 	}
 
-	files, err := snapshot(root, store, cfg.ChunkParams(), cfg.ChunkingPolicy, headFiles, verbose)
+	files, err := snapshot(ctx, root, store, cfg.ChunkParams(), cfg.ChunkingPolicy, headFiles, verbose)
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -204,9 +211,12 @@ func sameMtime(old meta.FileEntry, t time.Time) bool {
 	return old.ModTime == t.Unix()
 }
 
-func snapshot(root string, store core.BlockStore, params core.ChunkParams, policy int, head map[string]meta.FileEntry, verbose io.Writer) ([]meta.FileEntry, error) {
+func snapshot(ctx context.Context, root string, store core.BlockStore, params core.ChunkParams, policy int, head map[string]meta.FileEntry, verbose io.Writer) ([]meta.FileEntry, error) {
 	var files []meta.FileEntry
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			if os.IsNotExist(walkErr) {
 				return nil
@@ -266,7 +276,7 @@ func snapshot(root string, store core.BlockStore, params core.ChunkParams, polic
 		if verbose != nil {
 			fmt.Fprintf(verbose, "hashing: %s\n", rel)
 		}
-		blocks, sizes, size, err := putFileBlocks(path, store, params, policy)
+		blocks, sizes, size, err := putFileBlocks(ctx, path, store, params, policy)
 		if errors.Is(err, errFileVanished) {
 			return nil
 		}
@@ -283,7 +293,7 @@ func snapshot(root string, store core.BlockStore, params core.ChunkParams, polic
 	return files, nil
 }
 
-func putFileBlocks(path string, store core.BlockStore, params core.ChunkParams, policy int) ([]core.BlockID, []int64, int64, error) {
+func putFileBlocks(ctx context.Context, path string, store core.BlockStore, params core.ChunkParams, policy int) ([]core.BlockID, []int64, int64, error) {
 	if policy >= 1 {
 		head := make([]byte, 8192)
 		f, err := os.Open(path)
@@ -297,7 +307,12 @@ func putFileBlocks(path string, store core.BlockStore, params core.ChunkParams, 
 		_ = f.Close()
 		params = core.ParamsForContent(policy, params, head[:n])
 	}
-	return ChunkFile(path, params, store.Put)
+	return ChunkFile(path, params, func(chunk []byte) (core.BlockID, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		return store.Put(chunk)
+	})
 }
 
 // ChunkFile splits the file at path according to params and hands each chunk

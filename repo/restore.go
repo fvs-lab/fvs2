@@ -2,6 +2,7 @@ package repo
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"io/fs"
@@ -64,6 +65,12 @@ type RestoreResult struct {
 
 // Restore materializes a state into a directory.
 func Restore(root, state string, opts RestoreOptions) (RestoreResult, error) {
+	return RestoreContext(context.Background(), root, state, opts)
+}
+
+// RestoreContext is Restore with cancellation: the file loop checks ctx
+// between files and between chunks, so a daemon can abort a long restore.
+func RestoreContext(ctx context.Context, root, state string, opts RestoreOptions) (RestoreResult, error) {
 	root, err := absolute(root)
 	if err != nil {
 		return RestoreResult{}, err
@@ -92,7 +99,7 @@ func Restore(root, state string, opts RestoreOptions) (RestoreResult, error) {
 			return RestoreResult{}, err
 		}
 	}
-	if err := restoreCommit(dest, store, commitFiles, commit.BlockSize, opts); err != nil {
+	if err := restoreCommit(ctx, dest, store, commitFiles, commit.BlockSize, opts); err != nil {
 		return RestoreResult{}, err
 	}
 	if opts.Clean {
@@ -141,9 +148,12 @@ func safeOutPath(dest, rel string) (string, error) {
 	return out, nil
 }
 
-func restoreCommit(dest string, store core.BlockStore, files []meta.FileEntry, blockSize int, opts RestoreOptions) error {
+func restoreCommit(ctx context.Context, dest string, store core.BlockStore, files []meta.FileEntry, blockSize int, opts RestoreOptions) error {
 	verbose := opts.Verbose
 	for _, fe := range files {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		// State metadata is untrusted (it may come from a remote): refuse
 		// anything that could resolve outside the destination.
 		if err := meta.ValidateRelPath(fe.Path); err != nil {
@@ -193,6 +203,10 @@ func restoreCommit(dest string, store core.BlockStore, files []meta.FileEntry, b
 		bw := bufio.NewWriterSize(f, 65536)
 		var written int64
 		for _, bid := range fe.Blocks {
+			if err := ctx.Err(); err != nil {
+				_ = f.Close()
+				return err
+			}
 			b, err := store.Get(bid)
 			if err != nil {
 				_ = f.Close()
