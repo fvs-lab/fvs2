@@ -108,7 +108,7 @@ func expandTree(blocksBackend BlockBackend, root core.BlockID, visitTree func(co
 					return err
 				}
 			case "l":
-				out = append(out, meta.FileEntry{Path: full, Mode: e.Mode, ModTime: e.ModTime, Link: e.Link})
+				out = append(out, meta.FileEntry{Path: full, Mode: e.Mode, ModTime: e.ModTime, ModTimeNS: e.ModTimeNS, Link: e.Link})
 			default:
 				blocks, sizes := e.Blocks, e.Sizes
 				if e.Manifest != "" {
@@ -127,7 +127,7 @@ func expandTree(blocksBackend BlockBackend, root core.BlockID, visitTree func(co
 					blocks, sizes = m.Blocks, m.Sizes
 				}
 				out = append(out, meta.FileEntry{
-					Path: full, Mode: e.Mode, Size: e.Size, ModTime: e.ModTime,
+					Path: full, Mode: e.Mode, Size: e.Size, ModTime: e.ModTime, ModTimeNS: e.ModTimeNS,
 					Blocks: blocks, BlockSizes: sizes,
 				})
 			}

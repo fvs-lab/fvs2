@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"fvs2/internal/meta"
 )
 
 func TestCommitCreatesRevisionAndSkipsNoop(t *testing.T) {
@@ -44,5 +47,74 @@ func TestInitIsIdempotent(t *testing.T) {
 	}
 	if _, err := Init(root, 4096); err == nil {
 		t.Fatal("expected conflicting block size to fail")
+	}
+}
+
+// TestCommitDetectsSameSecondRewrite rewrites a file with same size, mode
+// and second-granularity mtime but a different nanosecond timestamp: the
+// nanosecond mtimes recorded in state metadata must defeat the reuse
+// shortcut and hash the new content.
+func TestCommitDetectsSameSecondRewrite(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root, 0); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(root, "f.bin")
+	if err := os.WriteFile(p, []byte("aaaaaaaa"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().Truncate(time.Second).Add(500 * time.Nanosecond)
+	if err := os.Chtimes(p, base, base); err != nil {
+		t.Fatal(err)
+	}
+	first, err := Commit(root, "c1", false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Same size, same second, different content and nanoseconds.
+	if err := os.WriteFile(p, []byte("bbbbbbbb"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(p, base.Add(time.Microsecond), base.Add(time.Microsecond)); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Commit(root, "c2", false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Created || second.StateID == first.StateID {
+		t.Fatalf("same-second rewrite missed: %+v vs %+v", second, first)
+	}
+}
+
+// TestModTimeNSRoundTripsThroughTrees checks the nanosecond mtime survives
+// the tree encode/decode and drives the restore skip.
+func TestModTimeNSRoundTripsThroughTrees(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root, 0); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(root, "f.txt")
+	if err := os.WriteFile(p, []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Commit(root, "c1", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	id, err := meta.ResolveHeadCommit(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := StateFiles(root, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].ModTimeNS != info.ModTime().UnixNano() {
+		t.Fatalf("mod_time_ns lost in trees: %+v vs %d", files, info.ModTime().UnixNano())
 	}
 }

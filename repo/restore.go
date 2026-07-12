@@ -167,7 +167,7 @@ func restoreCommit(dest string, store core.BlockStore, files []meta.FileEntry, v
 		}
 
 		if info, err := os.Lstat(outPath); err == nil {
-			if info.Mode().IsRegular() && info.Size() == fe.Size && uint32(info.Mode().Perm()) == fe.Mode && info.ModTime().Unix() == fe.ModTime {
+			if info.Mode().IsRegular() && info.Size() == fe.Size && uint32(info.Mode().Perm()) == fe.Mode && sameMtime(fe, info.ModTime()) {
 				continue
 			}
 			if !info.Mode().IsRegular() {
@@ -203,9 +203,17 @@ func restoreCommit(dest string, store core.BlockStore, files []meta.FileEntry, v
 		if err := f.Close(); err != nil {
 			return err
 		}
-		_ = os.Chtimes(outPath, time.Now(), time.Unix(fe.ModTime, 0))
+		_ = os.Chtimes(outPath, time.Now(), fileMtime(fe))
 	}
 	return nil
+}
+
+// fileMtime returns the entry's mtime at the finest recorded granularity.
+func fileMtime(fe meta.FileEntry) time.Time {
+	if fe.ModTimeNS != 0 {
+		return time.Unix(0, fe.ModTimeNS)
+	}
+	return time.Unix(fe.ModTime, 0)
 }
 
 // cleanDest removes any file or symlink under dest that is not part of the

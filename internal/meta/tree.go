@@ -29,15 +29,18 @@ type BlockPutter interface {
 // TreeEntry is one child of a tree object. Kind is "f" (file), "d"
 // (directory) or "l" (symlink).
 type TreeEntry struct {
-	Name    string         `json:"n"`
-	Kind    string         `json:"k"`
-	Mode    uint32         `json:"m,omitempty"`
-	Size    int64          `json:"s,omitempty"`
-	ModTime int64          `json:"t,omitempty"`
-	Blocks  []core.BlockID `json:"b,omitempty"`
-	Sizes   []int64        `json:"z,omitempty"`
-	Link    string         `json:"l,omitempty"`
-	Tree    core.BlockID   `json:"d,omitempty"`
+	Name    string `json:"n"`
+	Kind    string `json:"k"`
+	Mode    uint32 `json:"m,omitempty"`
+	Size    int64  `json:"s,omitempty"`
+	ModTime int64  `json:"t,omitempty"`
+	// ModTimeNS is the nanosecond mtime (absent in trees written before it
+	// existed; readers fall back to the second-granularity field).
+	ModTimeNS int64          `json:"tn,omitempty"`
+	Blocks    []core.BlockID `json:"b,omitempty"`
+	Sizes     []int64        `json:"z,omitempty"`
+	Link      string         `json:"l,omitempty"`
+	Tree      core.BlockID   `json:"d,omitempty"`
 	// Manifest points at the file's chunk list stored as its own
 	// content-addressed object. Long chunk lists move there so an edit to
 	// one file does not re-serialize its siblings' lists into the parent
@@ -138,13 +141,14 @@ func WriteTree(store BlockPutter, files []FileEntry) (core.BlockID, error) {
 			}
 		}
 		entry := TreeEntry{
-			Name:    path.Base(f.Path),
-			Kind:    "f",
-			Mode:    f.Mode,
-			Size:    f.Size,
-			ModTime: f.ModTime,
-			Blocks:  f.Blocks,
-			Sizes:   f.BlockSizes,
+			Name:      path.Base(f.Path),
+			Kind:      "f",
+			Mode:      f.Mode,
+			Size:      f.Size,
+			ModTime:   f.ModTime,
+			ModTimeNS: f.ModTimeNS,
+			Blocks:    f.Blocks,
+			Sizes:     f.BlockSizes,
 		}
 		if f.Link != "" {
 			entry.Kind = "l"
@@ -220,7 +224,7 @@ func walkTree(store BlockGetter, id core.BlockID, cache *TreeCache) (Reach, erro
 					return err
 				}
 			case "l":
-				out.Files = append(out.Files, FileEntry{Path: full, Mode: e.Mode, ModTime: e.ModTime, Link: e.Link})
+				out.Files = append(out.Files, FileEntry{Path: full, Mode: e.Mode, ModTime: e.ModTime, ModTimeNS: e.ModTimeNS, Link: e.Link})
 			default:
 				blocks, sizes := e.Blocks, e.Sizes
 				if e.Manifest != "" {
@@ -232,7 +236,7 @@ func walkTree(store BlockGetter, id core.BlockID, cache *TreeCache) (Reach, erro
 					blocks, sizes = m.Blocks, m.Sizes
 				}
 				out.Files = append(out.Files, FileEntry{
-					Path: full, Mode: e.Mode, Size: e.Size, ModTime: e.ModTime,
+					Path: full, Mode: e.Mode, Size: e.Size, ModTime: e.ModTime, ModTimeNS: e.ModTimeNS,
 					Blocks: blocks, BlockSizes: sizes,
 				})
 			}

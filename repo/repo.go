@@ -193,6 +193,17 @@ func absolute(path string) (string, error) {
 
 var errFileVanished = errors.New("file vanished")
 
+// sameMtime compares a working-tree mtime against the recorded one at the
+// finest granularity the state carries: nanoseconds when present, seconds
+// for states written before nanosecond mtimes existed. This is what lets the
+// commit shortcut catch a same-size rewrite within one second.
+func sameMtime(old meta.FileEntry, t time.Time) bool {
+	if old.ModTimeNS != 0 {
+		return old.ModTimeNS == t.UnixNano()
+	}
+	return old.ModTime == t.Unix()
+}
+
 func snapshot(root string, store core.BlockStore, params core.ChunkParams, policy int, head map[string]meta.FileEntry, verbose io.Writer) ([]meta.FileEntry, error) {
 	var files []meta.FileEntry
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
@@ -232,7 +243,7 @@ func snapshot(root string, store core.BlockStore, params core.ChunkParams, polic
 			if err != nil {
 				return err
 			}
-			files = append(files, meta.FileEntry{Path: rel, Mode: uint32(info.Mode().Perm()), ModTime: info.ModTime().Unix(), Link: target})
+			files = append(files, meta.FileEntry{Path: rel, Mode: uint32(info.Mode().Perm()), ModTime: info.ModTime().Unix(), ModTimeNS: info.ModTime().UnixNano(), Link: target})
 			return nil
 		}
 		if entry.IsDir() {
@@ -248,7 +259,7 @@ func snapshot(root string, store core.BlockStore, params core.ChunkParams, polic
 		if !info.Mode().IsRegular() {
 			return nil
 		}
-		if old, ok := head[rel]; ok && old.Link == "" && old.Size == info.Size() && old.ModTime == info.ModTime().Unix() && old.Mode == uint32(info.Mode().Perm()) {
+		if old, ok := head[rel]; ok && old.Link == "" && old.Size == info.Size() && sameMtime(old, info.ModTime()) && old.Mode == uint32(info.Mode().Perm()) {
 			files = append(files, old)
 			return nil
 		}
@@ -262,7 +273,7 @@ func snapshot(root string, store core.BlockStore, params core.ChunkParams, polic
 		if err != nil {
 			return err
 		}
-		files = append(files, meta.FileEntry{Path: rel, Mode: uint32(info.Mode().Perm()), Size: size, ModTime: info.ModTime().Unix(), Blocks: blocks, BlockSizes: sizes})
+		files = append(files, meta.FileEntry{Path: rel, Mode: uint32(info.Mode().Perm()), Size: size, ModTime: info.ModTime().Unix(), ModTimeNS: info.ModTime().UnixNano(), Blocks: blocks, BlockSizes: sizes})
 		return nil
 	})
 	if err != nil {

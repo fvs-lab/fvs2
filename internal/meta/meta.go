@@ -130,11 +130,15 @@ func CommitBlocksCached(store BlockGetter, c Commit, cache *TreeCache) ([]core.B
 }
 
 type FileEntry struct {
-	Path    string         `json:"path"`
-	Mode    uint32         `json:"mode"`
-	Size    int64          `json:"size"`
-	ModTime int64          `json:"mod_time"`
-	Blocks  []core.BlockID `json:"blocks"`
+	Path    string `json:"path"`
+	Mode    uint32 `json:"mode"`
+	Size    int64  `json:"size"`
+	ModTime int64  `json:"mod_time"`
+	// ModTimeNS is the full nanosecond mtime. It disambiguates same-second
+	// rewrites in the commit reuse shortcut; older states carry only seconds
+	// (0 here), and readers fall back accordingly.
+	ModTimeNS int64          `json:"mod_time_ns,omitempty"`
+	Blocks    []core.BlockID `json:"blocks"`
 	// BlockSizes holds the byte length of each entry in Blocks. It is present
 	// in format >= 2 commits, where blocks are content-defined and vary in
 	// size; format-1 readers derive offsets from the fixed block_size instead.
