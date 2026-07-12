@@ -19,3 +19,10 @@ var (
 	// format newer than this build understands.
 	ErrFormatUnsupported = meta.ErrFormatUnsupported
 )
+
+// CurrentFormat is the on-disk repo format this build writes.
+// MinFormat is the oldest on-disk repo format this build can still read.
+const (
+	CurrentFormat = meta.CurrentFormat
+	MinFormat     = 1
+)
