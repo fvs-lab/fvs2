@@ -49,7 +49,7 @@ const Version = 1
 // stable and safe to sign and re-verify.
 type Payload struct {
 	V        int    `json:"v"`
-	State    string `json:"state"`  // 64-hex content-addressed state id
+	State    string `json:"state"` // 64-hex content-addressed state id
 	Role     Role   `json:"role"`
 	Signer   string `json:"signer"` // ed25519 public key, hex (64 chars)
 	SignedAt int64  `json:"signed_at"`
@@ -74,10 +74,22 @@ var hexRx = func() func(string, int) bool {
 	}
 }()
 
-// canonical returns the exact bytes that are signed and verified.
+// domainTag prefixes the signed bytes so an FVS attestation signature can
+// never be replayed as a signature over some other protocol's message. It is
+// part of the signed input, not the stored payload.
+const domainTag = "FVS-ATTESTATION-V1\n"
+
+// canonical returns the deterministic payload bytes. json.Marshal of this
+// fixed-field struct is stable (declaration order, no maps), which is the v1
+// canonical form; verifiers re-marshal the same struct.
 func (p Payload) canonical() []byte {
 	b, _ := json.Marshal(p)
 	return b
+}
+
+// signingInput is the domain-separated message that is actually signed.
+func (p Payload) signingInput() []byte {
+	return append([]byte(domainTag), p.canonical()...)
 }
 
 // ID content-addresses the full attestation (payload + signature) so
@@ -142,7 +154,7 @@ func (k Key) Sign(p Payload) (Attestation, error) {
 	if p.SignedAt == 0 {
 		p.SignedAt = time.Now().UTC().Unix()
 	}
-	sig := ed25519.Sign(k.priv, p.canonical())
+	sig := ed25519.Sign(k.priv, p.signingInput())
 	return Attestation{Payload: p, Sig: hex.EncodeToString(sig)}, nil
 }
 
@@ -170,7 +182,7 @@ func Verify(a Attestation) error {
 	if err != nil {
 		return fmt.Errorf("bad signature: %w", err)
 	}
-	if !ed25519.Verify(ed25519.PublicKey(pub), a.Payload.canonical(), sig) {
+	if !ed25519.Verify(ed25519.PublicKey(pub), a.Payload.signingInput(), sig) {
 		return errors.New("signature does not verify")
 	}
 	return nil
