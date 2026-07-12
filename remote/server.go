@@ -451,7 +451,7 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request, id string) {
 			http.NotFound(w, r)
 			return
 		}
-		files, err := ExpandStateFiles(s.blocks, doc)
+		files, metaBlocks, err := ExpandState(s.blocks, doc)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -462,6 +462,12 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request, id string) {
 			return
 		}
 		full["files"] = files
+		// The metadata closure lets a puller fetch every tree and manifest
+		// object in one batch instead of walking the tree level by level.
+		if metaBlocks == nil {
+			metaBlocks = []core.BlockID{}
+		}
+		full["meta_blocks"] = metaBlocks
 		writeJSON(w, full)
 	case http.MethodPut:
 		rd, err := body(r)

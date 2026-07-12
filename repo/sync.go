@@ -158,14 +158,21 @@ func Pull(root string, rm meta.Remote, branch string) (PullResult, error) {
 		return PullResult{Branch: branch, StateID: id, UpToDate: true}, nil
 	}
 
-	doc, err := client.GetState(id)
+	doc, err := client.GetStateExpanded(id)
 	if err != nil {
 		return PullResult{}, err
 	}
-	var commit meta.Commit
-	if err := json.Unmarshal(doc, &commit); err != nil {
+	// The expanded response carries the state fields plus the server-side
+	// walk of its metadata: the flattened file list and the tree/manifest
+	// object ids, so the whole closure downloads in one batch.
+	var expanded struct {
+		meta.Commit
+		MetaBlocks []core.BlockID `json:"meta_blocks"`
+	}
+	if err := json.Unmarshal(doc, &expanded); err != nil {
 		return PullResult{}, fmt.Errorf("remote state %.12s is not a valid state document: %w", id, err)
 	}
+	commit := expanded.Commit
 	if commit.ID != id {
 		return PullResult{}, fmt.Errorf("remote state document id mismatch: got %.12s, want %.12s", commit.ID, id)
 	}
@@ -177,35 +184,59 @@ func Pull(root string, rm meta.Remote, branch string) (PullResult, error) {
 	if err != nil {
 		return PullResult{}, err
 	}
-	downloadedTrees, err := fetchTrees(store, client, commit)
-	if err != nil {
-		return PullResult{}, err
-	}
-	blocks, err := stateBlocks(store, commit)
-	if err != nil {
-		return PullResult{}, err
-	}
-	var wanted []core.BlockID
-	for _, b := range blocks {
-		ok, err := store.Has(b)
-		if err != nil {
-			return PullResult{}, err
-		}
-		if !ok {
-			wanted = append(wanted, b)
-		}
-	}
-	downloaded := downloadedTrees
-	if err := client.FetchBlocks(wanted, func(_ core.BlockID, data []byte) error {
+	downloaded := 0
+	put := func(_ core.BlockID, data []byte) error {
 		if _, err := store.Put(data); err != nil {
 			return err
 		}
 		downloaded++
 		return nil
-	}); err != nil {
+	}
+	if commit.RootTree != "" && expanded.MetaBlocks == nil {
+		// A server predating expansion: walk the tree level by level.
+		downloaded, err = fetchTrees(store, client, commit)
+		if err != nil {
+			return PullResult{}, err
+		}
+	} else {
+		wanted, err := missingBlocks(store, expanded.MetaBlocks)
+		if err != nil {
+			return PullResult{}, err
+		}
+		if err := client.FetchBlocks(wanted, put); err != nil {
+			return PullResult{}, err
+		}
+	}
+
+	// With the metadata objects local, one verified walk (they are
+	// content-addressed) yields the authoritative block list; the server's
+	// expanded file list is never trusted for reachability.
+	cache := meta.NewTreeCache()
+	reach, err := meta.CommitReach(store, commit, cache)
+	if err != nil {
+		return PullResult{}, fmt.Errorf("remote state %.12s: incomplete metadata closure: %w", id, err)
+	}
+	var fileBlocks []core.BlockID
+	for _, f := range reach.Files {
+		fileBlocks = append(fileBlocks, f.Blocks...)
+	}
+	wanted, err := missingBlocks(store, dedup(fileBlocks))
+	if err != nil {
+		return PullResult{}, err
+	}
+	if err := client.FetchBlocks(wanted, put); err != nil {
+		return PullResult{}, err
+	}
+	blocks, err := meta.CommitBlocksCached(store, commit, cache)
+	if err != nil {
 		return PullResult{}, err
 	}
 
+	if commit.RootTree != "" {
+		// The expanded response inlines the flattened list; the local
+		// document keeps only the root tree pointer, like the pushed one.
+		commit.Files = nil
+	}
 	if err := writeJSONAtomic(meta.CommitPath(root, id), commit); err != nil {
 		return PullResult{}, err
 	}
@@ -237,8 +268,37 @@ func Pull(root string, rm meta.Remote, branch string) (PullResult, error) {
 	}, nil
 }
 
+// missingBlocks filters ids down to those the local store does not have yet.
+func missingBlocks(store *core.DiskBlockStore, ids []core.BlockID) ([]core.BlockID, error) {
+	var out []core.BlockID
+	for _, id := range ids {
+		ok, err := store.Has(id)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+// dedup keeps the first occurrence of each id, preserving order.
+func dedup(ids []core.BlockID) []core.BlockID {
+	seen := make(map[core.BlockID]bool, len(ids))
+	out := ids[:0]
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // fetchTrees walks a format-3 state's tree objects, fetching the missing ones
-// level by level so CommitBlocks can then resolve the full file list locally.
+// level by level. It remains the fallback for servers predating state
+// expansion (no meta_blocks in the response).
 func fetchTrees(store *core.DiskBlockStore, client *remote.Client, commit meta.Commit) (int, error) {
 	if commit.RootTree == "" {
 		return 0, nil

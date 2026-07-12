@@ -3,9 +3,13 @@ package repo
 import (
 	"bytes"
 	"math/rand"
+	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"fvs2/internal/meta"
@@ -339,5 +343,80 @@ func TestGCRequiresAdmin(t *testing.T) {
 	client := remote.NewClient(ts.URL, "tu")
 	if _, err := client.GC(0); err == nil {
 		t.Fatal("gc from a non-admin must fail")
+	}
+}
+
+// TestPullFallsBackWithoutServerExpansion proxies the remote, rewriting
+// expanded state requests into raw ones (the pre-expansion server behavior):
+// the puller must detect the missing closure and walk the tree level by
+// level, ending with the same bytes.
+func TestPullFallsBackWithoutServerExpansion(t *testing.T) {
+	ts, _ := newRemote(t, "")
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/states/") {
+			r.URL.RawQuery = "" // strip expand=1: serve the raw document
+		}
+		target, _ := url.Parse(ts.URL)
+		r.Host = target.Host
+		httputil.NewSingleHostReverseProxy(target).ServeHTTP(w, r)
+	}))
+	t.Cleanup(proxy.Close)
+	rm := meta.Remote{URL: proxy.URL}
+
+	src := newSyncRepo(t)
+	data := make([]byte, 100<<10)
+	rand.New(rand.NewSource(77)).Read(data)
+	writeSync(t, src, "deep/nested/dirs/file.bin", data)
+	writeSync(t, src, "top.txt", []byte("fallback"))
+	if _, err := Commit(src, "c", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	push, err := Push(src, rm, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dst := newSyncRepo(t)
+	pull, err := Pull(dst, rm, "main")
+	if err != nil {
+		t.Fatalf("pull without server expansion: %v", err)
+	}
+	if pull.StateID != push.StateID || pull.DownloadedBlocks != push.TotalBlocks {
+		t.Fatalf("pull = %+v, push = %+v", pull, push)
+	}
+	if _, err := Restore(dst, pull.StateID, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dst, "deep/nested/dirs/file.bin"))
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("fallback pull restored wrong content: %v", err)
+	}
+}
+
+// TestPullKeepsLocalStateDocLean checks that a pulled format-3 state stores
+// only the root tree pointer locally, not the server-expanded file list.
+func TestPullKeepsLocalStateDocLean(t *testing.T) {
+	_, rm := newRemote(t, "")
+
+	src := newSyncRepo(t)
+	writeSync(t, src, "a/b.txt", []byte("lean"))
+	if _, err := Commit(src, "c", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	push, err := Push(src, rm, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dst := newSyncRepo(t)
+	if _, err := Pull(dst, rm, "main"); err != nil {
+		t.Fatal(err)
+	}
+	commit, err := meta.LoadCommit(dst, push.StateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if commit.RootTree == "" || len(commit.Files) != 0 {
+		t.Fatalf("pulled doc must keep the tree pointer only: root=%q files=%d", commit.RootTree, len(commit.Files))
 	}
 }

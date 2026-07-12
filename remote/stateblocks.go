@@ -59,14 +59,29 @@ func CollectStateBlocks(blocks BlockBackend, doc []byte) ([]core.BlockID, error)
 // ExpandStateFiles flattens a state document's file list, walking format-3
 // trees through the block backend.
 func ExpandStateFiles(blocks BlockBackend, doc []byte) ([]meta.FileEntry, error) {
+	files, _, err := ExpandState(blocks, doc)
+	return files, err
+}
+
+// ExpandState flattens a state document's file list and also reports the
+// tree and manifest object ids the walk visited, so a client can fetch a
+// state's whole metadata closure without level-by-level round trips.
+func ExpandState(blocks BlockBackend, doc []byte) ([]meta.FileEntry, []core.BlockID, error) {
 	var commit meta.Commit
 	if err := json.Unmarshal(doc, &commit); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if commit.RootTree == "" {
-		return commit.Files, nil
+		return commit.Files, nil, nil
 	}
-	return expandTree(blocks, commit.RootTree, func(core.BlockID) {})
+	var metaBlocks []core.BlockID
+	files, err := expandTree(blocks, commit.RootTree, func(id core.BlockID) {
+		metaBlocks = append(metaBlocks, id)
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return files, metaBlocks, nil
 }
 
 func expandTree(blocksBackend BlockBackend, root core.BlockID, visitTree func(core.BlockID)) ([]meta.FileEntry, error) {

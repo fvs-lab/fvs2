@@ -230,6 +230,23 @@ func (c *Client) PutState(id string, doc []byte) error {
 	return nil
 }
 
+// GetStateExpanded fetches a state document with server-side expansion: the
+// response carries the flattened file list ("files") and the tree/manifest
+// object ids ("meta_blocks") alongside the state fields. Servers predating
+// expansion return the raw document; callers detect that by the missing
+// meta_blocks field.
+func (c *Client) GetStateExpanded(id string) ([]byte, error) {
+	resp, err := c.do(http.MethodGet, "/v1/states/"+id+"?expand=1", nil, "", "")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, unexpected(resp)
+	}
+	return io.ReadAll(resp.Body)
+}
+
 func (c *Client) GetState(id string) ([]byte, error) {
 	resp, err := c.do(http.MethodGet, "/v1/states/"+id, nil, "", "")
 	if err != nil {
