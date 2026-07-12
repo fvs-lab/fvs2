@@ -48,6 +48,11 @@ type RestoreOptions struct {
 	Clean bool
 	// Reset moves HEAD to the restored state.
 	Reset bool
+	// FastSkip trusts size, mode and mtime to skip existing files without
+	// reading them. The default verifies content against the recorded chunk
+	// hashes, so a file whose bytes changed under an unchanged stat never
+	// survives a restore.
+	FastSkip bool
 	// Verbose receives per-file progress when non-nil.
 	Verbose io.Writer
 }
@@ -87,7 +92,7 @@ func Restore(root, state string, opts RestoreOptions) (RestoreResult, error) {
 			return RestoreResult{}, err
 		}
 	}
-	if err := restoreCommit(dest, store, commitFiles, opts.Verbose); err != nil {
+	if err := restoreCommit(dest, store, commitFiles, commit.BlockSize, opts); err != nil {
 		return RestoreResult{}, err
 	}
 	if opts.Clean {
@@ -136,7 +141,8 @@ func safeOutPath(dest, rel string) (string, error) {
 	return out, nil
 }
 
-func restoreCommit(dest string, store core.BlockStore, files []meta.FileEntry, verbose io.Writer) error {
+func restoreCommit(dest string, store core.BlockStore, files []meta.FileEntry, blockSize int, opts RestoreOptions) error {
+	verbose := opts.Verbose
 	for _, fe := range files {
 		// State metadata is untrusted (it may come from a remote): refuse
 		// anything that could resolve outside the destination.
@@ -168,7 +174,12 @@ func restoreCommit(dest string, store core.BlockStore, files []meta.FileEntry, v
 
 		if info, err := os.Lstat(outPath); err == nil {
 			if info.Mode().IsRegular() && info.Size() == fe.Size && uint32(info.Mode().Perm()) == fe.Mode && sameMtime(fe, info.ModTime()) {
-				continue
+				// Metadata alone is not proof of content: verify against the
+				// recorded chunk hashes unless the caller opted into the fast
+				// metadata-only mode.
+				if opts.FastSkip || fileMatchesBlocks(outPath, fe, blockSize) {
+					continue
+				}
 			}
 			if !info.Mode().IsRegular() {
 				_ = os.Remove(outPath)
@@ -206,6 +217,58 @@ func restoreCommit(dest string, store core.BlockStore, files []meta.FileEntry, v
 		_ = os.Chtimes(outPath, time.Now(), fileMtime(fe))
 	}
 	return nil
+}
+
+// fileMatchesBlocks reports whether the file's bytes hash to the entry's
+// recorded chunk list. It re-reads the file but never re-chunks it: the
+// recorded per-chunk sizes (or the fixed block size for format-1 states)
+// give the exact segment boundaries.
+func fileMatchesBlocks(path string, fe meta.FileEntry, blockSize int) bool {
+	sizes := fe.BlockSizes
+	if len(sizes) != len(fe.Blocks) {
+		sizes = make([]int64, len(fe.Blocks))
+		if len(fe.Blocks) == 1 {
+			sizes[0] = fe.Size
+		} else {
+			if blockSize <= 0 {
+				return false
+			}
+			remaining := fe.Size
+			for i := range sizes {
+				n := int64(blockSize)
+				if remaining < n {
+					n = remaining
+				}
+				sizes[i] = n
+				remaining -= n
+			}
+		}
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	r := bufio.NewReaderSize(f, 65536)
+	var total int64
+	for i, bid := range fe.Blocks {
+		buf := make([]byte, sizes[i])
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return false
+		}
+		if core.ContentID(buf) != bid {
+			return false
+		}
+		total += sizes[i]
+	}
+	if total != fe.Size {
+		return false
+	}
+	// The file must end exactly where the chunk list does.
+	if _, err := r.ReadByte(); err != io.EOF {
+		return false
+	}
+	return true
 }
 
 // fileMtime returns the entry's mtime at the finest recorded granularity.

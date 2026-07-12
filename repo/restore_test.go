@@ -182,3 +182,59 @@ func TestRestoreKeepsDotFvs2LookalikeFiles(t *testing.T) {
 		t.Fatal("restore must not materialize .fvs2 metadata")
 	}
 }
+
+// TestRestoreRepairsMetadataMatchingCorruption tampers a restored file while
+// keeping size, mode and mtime identical: the default restore must verify
+// content and repair it; --fast (FastSkip) must trust the metadata.
+func TestRestoreRepairsMetadataMatchingCorruption(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "f.bin"), []byte("genuine!"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Commit(root, "c1", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	id, err := meta.ResolveHeadCommit(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := t.TempDir()
+	if _, err := Restore(root, id, RestoreOptions{To: dest}); err != nil {
+		t.Fatal(err)
+	}
+
+	tamper := func() {
+		p := filepath.Join(dest, "f.bin")
+		info, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mtime := info.ModTime()
+		if err := os.WriteFile(p, []byte("tampered"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tamper()
+	if _, err := Restore(root, id, RestoreOptions{To: dest, FastSkip: true}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dest, "f.bin"))
+	if string(got) != "tampered" {
+		t.Fatal("FastSkip must not read or repair metadata-matching files")
+	}
+
+	if _, err := Restore(root, id, RestoreOptions{To: dest}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = os.ReadFile(filepath.Join(dest, "f.bin"))
+	if string(got) != "genuine!" {
+		t.Fatalf("default restore must repair tampered content, got %q", got)
+	}
+}

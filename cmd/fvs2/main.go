@@ -154,6 +154,7 @@ type RestoreCmd struct {
 	To      string `cli:"to" help:"restore destination (default: --path)"`
 	Reset   bool   `cli:"reset" help:"reset HEAD to the restored commit"`
 	Clean   bool   `cli:"clean" help:"remove files in the destination that are not in the state (exact checkout)"`
+	Fast    bool   `cli:"fast" help:"skip existing files on size/mode/mtime alone, without verifying content"`
 	Verbose bool   `cli:"verbose,v" help:"print verbose logs"`
 	Root    *CLI   `internal:"ignore"`
 }
@@ -168,10 +169,11 @@ func (c *RestoreCmd) Run() error {
 		verbose = os.Stdout
 	}
 	res, err := fvsrepo.Restore(root, c.State, fvsrepo.RestoreOptions{
-		To:      c.To,
-		Clean:   c.Clean,
-		Reset:   c.Reset,
-		Verbose: verbose,
+		To:       c.To,
+		Clean:    c.Clean,
+		Reset:    c.Reset,
+		FastSkip: c.Fast,
+		Verbose:  verbose,
 	})
 	if err != nil {
 		return err
