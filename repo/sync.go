@@ -88,7 +88,10 @@ func Push(root string, rm meta.Remote, branch string, force bool) (PushResult, e
 		if err != nil {
 			return PushResult{}, err
 		}
-		return PushResult{Branch: branch, StateID: id, TotalBlocks: len(all)}, nil
+		// The state is already on the remote, but attestations can still be
+		// new: signing is retroactive, so sync them anyway.
+		pushedAtt := pushAttestations(client, root, id)
+		return PushResult{Branch: branch, StateID: id, TotalBlocks: len(all), Attestations: pushedAtt}, nil
 	}
 	if remoteID != "" && !force {
 		if _, err := meta.LoadCommit(root, remoteID); err != nil {
