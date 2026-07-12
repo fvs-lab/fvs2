@@ -36,6 +36,9 @@ type CLI struct {
 	Serve    ServeCmd    `cmd:"serve" help:"Serve a directory as an FVS remote"`
 	Env      EnvCmd      `cmd:"env" help:"Compose reproducible multi-layer environments"`
 	Pack     PackCmd     `cmd:"pack" help:"Compact the store into lineage-ordered pack frames"`
+	Key      KeyCmd      `cmd:"key" help:"Manage your signing identity"`
+	Sign     SignCmd     `cmd:"sign" help:"Sign a state with your identity (attestation)"`
+	Attest   AttestCmd   `cmd:"attest" help:"List and verify state attestations"`
 
 	clibuilder.Base
 }
@@ -73,6 +76,13 @@ func (c *CLI) Before() error {
 	c.Env.Plan.Root = c
 	c.Pack.Root = c
 	c.Pack.Verify.Root = c
+	c.Key.Root = c
+	c.Key.Gen.Root = c
+	c.Key.Show.Root = c
+	c.Sign.Root = c
+	c.Attest.Root = c
+	c.Attest.Ls.Root = c
+	c.Attest.Verify.Root = c
 	return nil
 }
 
