@@ -485,6 +485,13 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request, id string) {
 			http.Error(w, "state must be valid JSON", http.StatusBadRequest)
 			return
 		}
+		// The state is untrusted input: refuse anything gc or a puller could
+		// choke on (id mismatch, unknown format, unsafe paths, missing
+		// blocks). Blocks upload before states, so a valid push always passes.
+		if err := ValidateState(s.blocks, id, data); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		if err := writeFileAtomic(s.statePath(id), data); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -560,6 +567,17 @@ func (s *Server) ref(w http.ResponseWriter, r *http.Request, user User, name str
 		}
 		if !hexID.MatchString(req.ID) {
 			http.Error(w, "invalid state id", http.StatusBadRequest)
+			return
+		}
+		// A ref must point at a stored, valid state: a dangling or malformed
+		// target would poison gc marking and every future pull.
+		doc, err := os.ReadFile(s.statePath(req.ID))
+		if err != nil {
+			http.Error(w, fmt.Sprintf("ref target state %.12s not found on this remote", req.ID), http.StatusBadRequest)
+			return
+		}
+		if err := ValidateState(s.blocks, req.ID, doc); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		// The compare-and-swap runs under a file lock shared by every server

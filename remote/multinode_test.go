@@ -46,6 +46,9 @@ func TestCASSerializesAcrossServers(t *testing.T) {
 	clients := []*Client{NewClient(tsA.URL, "t"), NewClient(tsB.URL, "t")}
 
 	const workers = 8
+	for w := 0; w < workers; w++ {
+		putEmptyState(t, clients[0], hexOf(w+100))
+	}
 	var mu sync.Mutex
 	seenOld := map[string]bool{}
 	var wg sync.WaitGroup
@@ -147,6 +150,7 @@ func TestAccountChangesVisibleAcrossServers(t *testing.T) {
 	}
 	// The other instance never saw this token: it must reload and accept it.
 	carol := NewClient(tsB.URL, "tc")
+	putEmptyState(t, carol, hexOf(7))
 	if err := carol.PutRef("main", hexOf(7), ""); err != nil {
 		t.Fatalf("account added on node A must work on node B: %v", err)
 	}

@@ -55,6 +55,7 @@ func TestRuntimeAccountManagement(t *testing.T) {
 	}
 
 	alice := NewClient(ts.URL, "ta")
+	putEmptyState(t, alice, strings.Repeat("a", 64))
 	if err := alice.PutRef("main", strings.Repeat("a", 64), ""); err != nil {
 		t.Fatalf("new account should work without a restart: %v", err)
 	}
@@ -105,6 +106,7 @@ func TestTeamNamespaceSharing(t *testing.T) {
 	id := strings.Repeat("c", 64)
 	// alice pushes a ref into the shared team namespace.
 	aliceTeam := NewClientNS(ts.URL, "ta", "acme")
+	putEmptyState(t, aliceTeam, id)
 	if err := aliceTeam.PutRef("release", id, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -146,6 +148,7 @@ func TestAuditLog(t *testing.T) {
 	_, ts := newTestServer(t, Config{Root: dir, Users: []User{{Name: "u", Token: "t"}}, AuditFile: auditFile})
 
 	c := NewClient(ts.URL, "t")
+	putEmptyState(t, c, strings.Repeat("d", 64))
 	if err := c.PutRef("main", strings.Repeat("d", 64), ""); err != nil {
 		t.Fatal(err)
 	}
@@ -156,8 +159,8 @@ func TestAuditLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Count(strings.TrimSpace(string(data)), "\n") + 1
-	if lines != 1 {
-		t.Fatalf("audit log has %d lines, want 1 (only the mutating PUT)", lines)
+	if lines != 2 {
+		t.Fatalf("audit log has %d lines, want 2 (the mutating state and ref PUTs)", lines)
 	}
 	if !strings.Contains(string(data), `"account":"u"`) || !strings.Contains(string(data), `"method":"PUT"`) {
 		t.Fatalf("audit entry missing fields: %s", data)
@@ -314,6 +317,9 @@ func TestWhoamiAndListRefs(t *testing.T) {
 	}
 
 	// Two personal refs and one team ref: the list is namespace-scoped.
+	for _, seed := range []string{"a", "b", "c"} {
+		putEmptyState(t, c, strings.Repeat(seed, 64))
+	}
 	if err := c.PutRef("main", strings.Repeat("a", 64), ""); err != nil {
 		t.Fatal(err)
 	}
