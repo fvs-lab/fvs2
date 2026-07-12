@@ -11,7 +11,33 @@ import (
 
 type PackCmd struct {
 	Cold bool `cli:"cold" help:"cold tier: 4 MiB frames, maximum compression (best for archived history)"`
+
+	Verify PackVerifyCmd `cmd:"verify" help:"Verify pack frame checksums and chunk hashes"`
+
 	Root *CLI `internal:"ignore"`
+}
+
+type PackVerifyCmd struct {
+	Root *CLI `internal:"ignore"`
+}
+
+// Run re-reads every pack frame, checking the stored frame checksum against
+// the compressed payload and every chunk against its content address.
+func (c *PackVerifyCmd) Run() error {
+	root, err := absClean(c.Root.Path)
+	if err != nil {
+		return err
+	}
+	store, err := meta.NewBlockStore(root)
+	if err != nil {
+		return err
+	}
+	frames, chunks, err := store.VerifyPacks()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "ok: %d frames, %d chunks verified\n", frames, chunks)
+	return nil
 }
 
 // Run compacts the store into lineage-ordered pack frames: consecutive

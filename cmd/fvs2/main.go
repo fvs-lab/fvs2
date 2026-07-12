@@ -25,6 +25,7 @@ type CLI struct {
 	States   StatesCmd   `cmd:"states" help:"List saved states"`
 	Drop     DropCmd     `cmd:"drop" help:"Delete a state (snapshot)"`
 	Gc       GcCmd       `cmd:"gc" help:"Remove unreferenced blocks and orphan states from the store"`
+	Fsck     FsckCmd     `cmd:"fsck" help:"Verify states, tree closures, refs and block integrity"`
 	Restore  RestoreCmd  `cmd:"restore" help:"Restore a state into a directory"`
 	Branch   BranchCmd   `cmd:"branch" help:"Manage branches"`
 	Checkout CheckoutCmd `cmd:"checkout" help:"Update HEAD to a branch or a commit (detached)"`
@@ -45,6 +46,7 @@ func (c *CLI) Before() error {
 	c.States.Root = c
 	c.Drop.Root = c
 	c.Gc.Root = c
+	c.Fsck.Root = c
 	c.Restore.Root = c
 	c.Branch.Root = c
 	c.Branch.List.Root = c
@@ -70,6 +72,7 @@ func (c *CLI) Before() error {
 	c.Env.Sync.Root = c
 	c.Env.Plan.Root = c
 	c.Pack.Root = c
+	c.Pack.Verify.Root = c
 	return nil
 }
 
