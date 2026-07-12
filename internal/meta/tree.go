@@ -135,6 +135,11 @@ func ReadTree(store *core.DiskBlockStore, id core.BlockID) ([]FileEntry, error) 
 			return fmt.Errorf("tree %s: %w", tree, err)
 		}
 		for _, e := range entries {
+			// Tree objects are untrusted: a hostile name ("..", "a/b") could
+			// steer a restore outside its destination.
+			if err := ValidateEntryName(e.Name); err != nil {
+				return fmt.Errorf("tree %s: %w", tree, err)
+			}
 			full := path.Join(prefix, e.Name)
 			switch e.Kind {
 			case "d":

@@ -103,11 +103,52 @@ func Restore(root, state string, opts RestoreOptions) (RestoreResult, error) {
 	return RestoreResult{StateID: id, Dest: dest}, nil
 }
 
+// safeOutPath resolves a validated state path under dest, creating its
+// parent directories while refusing to walk through symlinks: a symlinked
+// ancestor (from a hostile state, or planted in the destination) would
+// redirect the write outside dest. An ancestor that exists as anything but a
+// real directory is replaced with one.
+func safeOutPath(dest, rel string) (string, error) {
+	parts := strings.Split(rel, "/")
+	dir := dest
+	for _, part := range parts[:len(parts)-1] {
+		dir = filepath.Join(dir, part)
+		info, err := os.Lstat(dir)
+		switch {
+		case err == nil && info.Mode().IsDir():
+			continue
+		case err == nil:
+			if err := os.Remove(dir); err != nil {
+				return "", err
+			}
+		case !os.IsNotExist(err):
+			return "", err
+		}
+		if err := os.Mkdir(dir, 0o755); err != nil && !os.IsExist(err) {
+			return "", err
+		}
+	}
+	out := filepath.Join(dir, parts[len(parts)-1])
+	// Belt and braces: validated components cannot escape, but prove it.
+	if out != dest && !strings.HasPrefix(out, filepath.Clean(dest)+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path %q escapes the destination", rel)
+	}
+	return out, nil
+}
+
 func restoreCommit(dest string, store core.BlockStore, files []meta.FileEntry, verbose io.Writer) error {
 	for _, fe := range files {
-		outPath := filepath.Join(dest, filepath.FromSlash(fe.Path))
-		if strings.HasPrefix(filepath.Clean(outPath), filepath.Join(dest, ".fvs2")) {
+		// State metadata is untrusted (it may come from a remote): refuse
+		// anything that could resolve outside the destination.
+		if err := meta.ValidateRelPath(fe.Path); err != nil {
+			return fmt.Errorf("state file: %w", err)
+		}
+		if fe.Path == ".fvs2" || strings.HasPrefix(fe.Path, ".fvs2/") {
 			continue
+		}
+		outPath, err := safeOutPath(dest, fe.Path)
+		if err != nil {
+			return err
 		}
 
 		if verbose != nil {
@@ -115,9 +156,6 @@ func restoreCommit(dest string, store core.BlockStore, files []meta.FileEntry, v
 		}
 
 		if fe.Link != "" {
-			if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-				return err
-			}
 			if cur, err := os.Readlink(outPath); err == nil && cur == fe.Link {
 				continue
 			}
@@ -137,9 +175,6 @@ func restoreCommit(dest string, store core.BlockStore, files []meta.FileEntry, v
 			}
 		}
 
-		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-			return err
-		}
 		f, err := os.OpenFile(outPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(fe.Mode))
 		if err != nil {
 			return err
