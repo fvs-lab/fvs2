@@ -101,7 +101,7 @@ func CommitContext(ctx context.Context, root, message string, allowEmpty bool, v
 	if err != nil {
 		return CommitResult{}, err
 	}
-	lock, err := meta.LockRepo(root, 5*time.Second)
+	lock, err := meta.LockRepo(root, lockTimeout)
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -199,6 +199,9 @@ func absolute(path string) (string, error) {
 }
 
 var errFileVanished = errors.New("file vanished")
+
+// lockTimeout is how long mutating operations wait for the repo lock.
+var lockTimeout = 5 * time.Second
 
 // sameMtime compares a working-tree mtime against the recorded one at the
 // finest granularity the state carries: nanoseconds when present, seconds

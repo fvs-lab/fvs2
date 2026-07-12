@@ -79,6 +79,22 @@ func RestoreContext(ctx context.Context, root, state string, opts RestoreOptions
 	if err != nil {
 		return RestoreResult{}, err
 	}
+	dest := root
+	if opts.To != "" {
+		dest, err = absolute(opts.To)
+		if err != nil {
+			return RestoreResult{}, err
+		}
+	}
+	// Writing into the repo root or moving HEAD races with concurrent
+	// mutating operations (commit, gc): take the same advisory lock they do.
+	if dest == root || opts.Reset {
+		lock, err := meta.LockRepo(root, lockTimeout)
+		if err != nil {
+			return RestoreResult{}, err
+		}
+		defer lock.Unlock()
+	}
 	commit, err := meta.LoadCommit(root, id)
 	if err != nil {
 		return RestoreResult{}, err
@@ -92,13 +108,6 @@ func RestoreContext(ctx context.Context, root, state string, opts RestoreOptions
 		return RestoreResult{}, err
 	}
 
-	dest := root
-	if opts.To != "" {
-		dest, err = absolute(opts.To)
-		if err != nil {
-			return RestoreResult{}, err
-		}
-	}
 	if err := restoreCommit(ctx, dest, store, commitFiles, commit.BlockSize, opts); err != nil {
 		return RestoreResult{}, err
 	}
@@ -196,40 +205,68 @@ func restoreCommit(ctx context.Context, dest string, store core.BlockStore, file
 			}
 		}
 
-		f, err := os.OpenFile(outPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(fe.Mode))
-		if err != nil {
-			return err
-		}
-		bw := bufio.NewWriterSize(f, 65536)
-		var written int64
-		for _, bid := range fe.Blocks {
-			if err := ctx.Err(); err != nil {
-				_ = f.Close()
-				return err
-			}
-			b, err := store.Get(bid)
-			if err != nil {
-				_ = f.Close()
-				return err
-			}
-			if _, err := bw.Write(b); err != nil {
-				_ = f.Close()
-				return err
-			}
-			written += int64(len(b))
-			if written >= fe.Size {
-				break
-			}
-		}
-		if err := bw.Flush(); err != nil {
-			_ = f.Close()
-			return err
-		}
-		if err := f.Close(); err != nil {
+		if err := writeFileFromBlocks(ctx, outPath, store, fe); err != nil {
 			return err
 		}
 		_ = os.Chtimes(outPath, time.Now(), fileMtime(fe))
 	}
+	return nil
+}
+
+// writeFileFromBlocks materializes one file atomically: the chunks stream
+// into a temp file in the target directory, which is fsynced and renamed
+// over the final name. An interrupted restore never leaves a partial file
+// under its real name.
+func writeFileFromBlocks(ctx context.Context, outPath string, store core.BlockStore, fe meta.FileEntry) error {
+	tmp, err := os.CreateTemp(filepath.Dir(outPath), ".fvs2-restore-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	ok := false
+	defer func() {
+		_ = tmp.Close()
+		if !ok {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	bw := bufio.NewWriterSize(tmp, 65536)
+	var written int64
+	for _, bid := range fe.Blocks {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		b, err := store.Get(bid)
+		if err != nil {
+			return err
+		}
+		if _, err := bw.Write(b); err != nil {
+			return err
+		}
+		written += int64(len(b))
+		if written >= fe.Size {
+			break
+		}
+	}
+	if err := bw.Flush(); err != nil {
+		return err
+	}
+	if err := tmp.Chmod(os.FileMode(fe.Mode)); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	// Rename replaces whatever sits at outPath (stale file or symlink) in
+	// one atomic step.
+	if err := os.Rename(tmpPath, outPath); err != nil {
+		return err
+	}
+	ok = true
 	return nil
 }
 
