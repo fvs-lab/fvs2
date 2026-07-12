@@ -361,7 +361,7 @@ func computeDirty(root, headCommit string) (bool, int, error) {
 	}
 	// No head commit => treat as dirty if there are any files.
 	if headCommit == "" {
-		files, err := snapshotIDs(root, cfg.ChunkParams())
+		files, err := snapshotIDs(root, cfg.ChunkParams(), cfg.ChunkingPolicy)
 		if err != nil {
 			return false, 0, err
 		}
@@ -371,10 +371,14 @@ func computeDirty(root, headCommit string) (bool, int, error) {
 	if err != nil {
 		return false, 0, err
 	}
-	// Chunk the working tree with the head commit's parameters.
+	// Chunk the working tree with the head commit's parameters and the
+	// chunking policy it was created under, exactly like commit does:
+	// different boundaries would report identical content as dirty.
 	params := cfg.ChunkParams()
+	policy := c.ChunkingPolicy
 	if c.Format < 2 {
 		params = core.FixedChunkParams(c.BlockSize)
+		policy = 0
 	}
 	store, err := meta.NewBlockStore(root)
 	if err != nil {
@@ -388,7 +392,7 @@ func computeDirty(root, headCommit string) (bool, int, error) {
 	for _, fe := range commitList {
 		want[fe.Path] = fe
 	}
-	got, err := snapshotIDs(root, params)
+	got, err := snapshotIDs(root, params, policy)
 	if err != nil {
 		return false, 0, err
 	}
@@ -434,7 +438,7 @@ type snapEntry struct {
 	Link    string
 }
 
-func snapshotIDs(root string, params core.ChunkParams) (map[string]snapEntry, error) {
+func snapshotIDs(root string, params core.ChunkParams, policy int) (map[string]snapEntry, error) {
 	out := map[string]snapEntry{}
 	files, err := snapshotDirectoryNoStore(root)
 	if err != nil {
@@ -445,7 +449,7 @@ func snapshotIDs(root string, params core.ChunkParams) (map[string]snapEntry, er
 			out[f.Path] = snapEntry{Path: f.Path, Mode: f.Mode, ModTime: f.ModTime, Link: f.Link}
 			continue
 		}
-		blocks, size, err := hashFileBlocks(filepath.Join(root, filepath.FromSlash(f.Path)), params)
+		blocks, size, err := hashFileBlocks(filepath.Join(root, filepath.FromSlash(f.Path)), params, policy)
 		if err != nil {
 			if errors.Is(err, errFileVanished) {
 				continue
@@ -517,7 +521,22 @@ func snapshotDirectoryNoStore(root string) ([]meta.FileEntry, error) {
 	return files, nil
 }
 
-func hashFileBlocks(path string, params core.ChunkParams) ([]string, int64, error) {
+func hashFileBlocks(path string, params core.ChunkParams, policy int) ([]string, int64, error) {
+	// Apply the same content-sniffed parameter selection as commit-time
+	// chunking (core.ParamsForContent), so boundaries always agree.
+	if policy >= 1 {
+		f, err := os.Open(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, 0, errFileVanished
+			}
+			return nil, 0, err
+		}
+		head := make([]byte, 8192)
+		n, _ := io.ReadFull(f, head)
+		_ = f.Close()
+		params = core.ParamsForContent(policy, params, head[:n])
+	}
 	ids, _, total, err := fvsrepo.ChunkFile(path, params, func(chunk []byte) (core.BlockID, error) {
 		return core.ContentID(chunk), nil
 	})

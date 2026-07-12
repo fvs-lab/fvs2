@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -331,5 +332,34 @@ func TestLegacyFixedRepoStillCommits(t *testing.T) {
 	got, _ := os.ReadFile(filepath.Join(dest, "f.bin"))
 	if !bytes.Equal(got, data) {
 		t.Fatal("legacy restore differs")
+	}
+}
+
+// TestStatusDirtyHonorsChunkingPolicy commits a text file large enough that
+// policy-1 text chunking and the repo defaults disagree on boundaries: the
+// dirty check must apply the same policy as commit, so an untouched tree
+// reports clean.
+func TestStatusDirtyHonorsChunkingPolicy(t *testing.T) {
+	root, cli := newRepo(t)
+	line := "msgid \"hello world\"\nmsgstr \"ciao mondo\"\n"
+	text := strings.Repeat(line, 4000) // ~160 KiB of text
+	write(t, root, "big.po", []byte(text))
+	commitAll(t, cli, "text")
+
+	dirty, changed, err := computeDirty(root, headID(t, root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dirty {
+		t.Fatalf("clean text tree reported dirty (%d changed): chunking policy mismatch", changed)
+	}
+
+	write(t, root, "big.po", []byte(text+"tail\n"))
+	dirty, changed, err = computeDirty(root, headID(t, root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dirty || changed != 1 {
+		t.Fatalf("modified text file not detected: dirty=%v changed=%d", dirty, changed)
 	}
 }
