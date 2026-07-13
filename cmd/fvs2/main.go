@@ -40,6 +40,7 @@ type CLI struct {
 	Key      KeyCmd      `cmd:"key" help:"Manage your signing identity"`
 	Sign     SignCmd     `cmd:"sign" help:"Sign a state with your identity (attestation)"`
 	Attest   AttestCmd   `cmd:"attest" help:"List and verify state attestations"`
+	Vault    VaultCmd    `cmd:"vault" help:"Verify attestations against the transparency log"`
 
 	clibuilder.Base
 }
@@ -80,10 +81,14 @@ func (c *CLI) Before() error {
 	c.Key.Root = c
 	c.Key.Gen.Root = c
 	c.Key.Show.Root = c
+	c.Key.Deposit.Root = c
 	c.Sign.Root = c
 	c.Attest.Root = c
 	c.Attest.Ls.Root = c
 	c.Attest.Verify.Root = c
+	c.Vault.Root = c
+	c.Vault.Verify.Root = c
+	c.Vault.Monitor.Root = c
 	return nil
 }
 

@@ -1,0 +1,163 @@
+package main
+
+import (
+	"fmt"
+	"os"
+
+	"fvs2/attest"
+	"fvs2/remote"
+	fvsrepo "fvs2/repo"
+	fvsvault "fvs2/vault"
+)
+
+// ---- key deposit ----
+
+type KeyDepositCmd struct {
+	Remote string `cli:"remote" help:"remote name (default: the only one configured)"`
+	Root   *CLI   `internal:"ignore"`
+}
+
+func (c *KeyDepositCmd) Run() error {
+	root, err := absClean(c.Root.Path)
+	if err != nil {
+		return err
+	}
+	key, err := loadKey()
+	if err != nil {
+		return err
+	}
+	client, err := remoteClient(root, c.Remote)
+	if err != nil {
+		return err
+	}
+	if err := client.DepositKey(key.Public()); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "deposited public key %.16s on the remote account\n", key.Public())
+	return nil
+}
+
+// ---- vault ----
+
+type VaultCmd struct {
+	Verify  VaultVerifyCmd  `cmd:"verify" help:"Verify a state's attestations against the transparency log"`
+	Monitor VaultMonitorCmd `cmd:"monitor" help:"Fetch the log's tree head and check it against the pin"`
+	Root    *CLI            `internal:"ignore"`
+}
+
+// reconcilePin fetches the log key and current tree head, checks them against
+// the stored pin (trust-on-first-use, then consistency), and persists the
+// advanced pin. It returns the verified log key.
+func reconcilePin(client *remote.Client) (fvsvault.LogKey, error) {
+	key, err := client.VaultLogKey()
+	if err != nil {
+		return fvsvault.LogKey{}, err
+	}
+	sth, err := client.VaultSTH()
+	if err != nil {
+		return fvsvault.LogKey{}, err
+	}
+	host := client.Host()
+	old, err := fvsvault.LoadPin(host)
+	if err != nil {
+		return fvsvault.LogKey{}, err
+	}
+	pin, err := fvsvault.Reconcile(old, host, key, sth, func(first uint64) ([]string, error) {
+		proof, _, err := client.VaultConsistency(first)
+		return proof, err
+	})
+	if err != nil {
+		return fvsvault.LogKey{}, err
+	}
+	if err := fvsvault.SavePin(pin); err != nil {
+		return fvsvault.LogKey{}, err
+	}
+	return key, nil
+}
+
+type VaultVerifyCmd struct {
+	State  string `cli:"state" help:"state id or prefix (default: current HEAD)"`
+	Remote string `cli:"remote" help:"remote name (default: the only one configured)"`
+	Root   *CLI   `internal:"ignore"`
+}
+
+func (c *VaultVerifyCmd) Run() error {
+	root, err := absClean(c.Root.Path)
+	if err != nil {
+		return err
+	}
+	state, err := resolveSignTarget(root, c.State)
+	if err != nil {
+		return err
+	}
+	client, err := remoteClient(root, c.Remote)
+	if err != nil {
+		return err
+	}
+	key, err := reconcilePin(client)
+	if err != nil {
+		return err
+	}
+	list, err := fvsrepo.LoadAttestations(root, state)
+	if err != nil {
+		return err
+	}
+	if len(list) == 0 {
+		fmt.Fprintf(os.Stdout, "no attestations for %.12s\n", state)
+		return nil
+	}
+	guaranteed, plain, bad := 0, 0, 0
+	for _, a := range list {
+		if attest.Verify(a) != nil {
+			bad++
+			fmt.Fprintf(os.Stderr, "INVALID signature %.12s by %.16s\n", a.State, a.Signer)
+			continue
+		}
+		proof, ok, err := client.VaultProof(a.ID())
+		if err != nil {
+			return err
+		}
+		if !ok {
+			plain++
+			fmt.Fprintf(os.Stdout, "%-8s %.16s  signed (not in log)\n", a.Role, a.Signer)
+			continue
+		}
+		if err := proof.Verify(key); err != nil {
+			bad++
+			fmt.Fprintf(os.Stderr, "UNPROVEN %-8s %.16s: %v\n", a.Role, a.Signer, err)
+			continue
+		}
+		guaranteed++
+		fmt.Fprintf(os.Stdout, "%-8s %.16s  guaranteed (leaf %d)\n", a.Role, a.Signer, proof.LeafIndex)
+	}
+	fmt.Fprintf(os.Stdout, "%.12s: %d guaranteed, %d signed-only, %d failed\n", state, guaranteed, plain, bad)
+	if bad > 0 {
+		return fmt.Errorf("%d attestations failed verification", bad)
+	}
+	return nil
+}
+
+type VaultMonitorCmd struct {
+	Remote string `cli:"remote" help:"remote name (default: the only one configured)"`
+	Root   *CLI   `internal:"ignore"`
+}
+
+func (c *VaultMonitorCmd) Run() error {
+	root, err := absClean(c.Root.Path)
+	if err != nil {
+		return err
+	}
+	client, err := remoteClient(root, c.Remote)
+	if err != nil {
+		return err
+	}
+	if _, err := reconcilePin(client); err != nil {
+		return err
+	}
+	pin, err := fvsvault.LoadPin(client.Host())
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "log %s consistent at size %d\n", pin.LogID, pin.TreeSize)
+	return nil
+}

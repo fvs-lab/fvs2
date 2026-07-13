@@ -38,9 +38,10 @@ func loadKey() (attest.Key, error) {
 // ---- key management ----
 
 type KeyCmd struct {
-	Gen  KeyGenCmd  `cmd:"gen" help:"Generate a signing identity (Ed25519)"`
-	Show KeyShowCmd `cmd:"show" help:"Show your public key fingerprint"`
-	Root *CLI       `internal:"ignore"`
+	Gen     KeyGenCmd     `cmd:"gen" help:"Generate a signing identity (Ed25519)"`
+	Show    KeyShowCmd    `cmd:"show" help:"Show your public key fingerprint"`
+	Deposit KeyDepositCmd `cmd:"deposit" help:"Deposit your public key on a remote account"`
+	Root    *CLI          `internal:"ignore"`
 }
 
 type KeyGenCmd struct {
