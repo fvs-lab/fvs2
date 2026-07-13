@@ -42,6 +42,7 @@ func (c *KeyDepositCmd) Run() error {
 type VaultCmd struct {
 	Verify  VaultVerifyCmd  `cmd:"verify" help:"Verify a state's attestations against the transparency log"`
 	Monitor VaultMonitorCmd `cmd:"monitor" help:"Fetch the log's tree head and check it against the pin"`
+	Witness VaultWitnessCmd `cmd:"witness" help:"Register witnesses and cosign tree heads"`
 	Root    *CLI            `internal:"ignore"`
 }
 
@@ -97,6 +98,11 @@ func (c *VaultVerifyCmd) Run() error {
 	key, err := reconcilePin(client)
 	if err != nil {
 		return err
+	}
+	if pin, err := fvsvault.LoadPin(client.Host()); err == nil && pin != nil {
+		if err := checkWitnesses(client, *pin); err != nil {
+			return err
+		}
 	}
 	list, err := fvsrepo.LoadAttestations(root, state)
 	if err != nil {
@@ -158,6 +164,96 @@ func (c *VaultMonitorCmd) Run() error {
 	if err != nil {
 		return err
 	}
+	if err := checkWitnesses(client, *pin); err != nil {
+		return err
+	}
 	fmt.Fprintf(os.Stdout, "log %s consistent at size %d\n", pin.LogID, pin.TreeSize)
+	return nil
+}
+
+// ---- witnesses ----
+
+type VaultWitnessCmd struct {
+	Register VaultWitnessRegisterCmd `cmd:"register" help:"Register a witness public key (admin)"`
+	Cosign   VaultWitnessCosignCmd   `cmd:"cosign" help:"Cosign the log's current tree head as a witness"`
+	Root     *CLI                    `internal:"ignore"`
+}
+
+type VaultWitnessRegisterCmd struct {
+	Remote string `cli:"remote" help:"remote name (default: the only one configured)"`
+	Label  string `cli:"label" help:"human label for the witness"`
+	Public string `arg:"" required:"true" help:"witness ed25519 public key (64 hex)"`
+	Root   *CLI   `internal:"ignore"`
+}
+
+func (c *VaultWitnessRegisterCmd) Run() error {
+	root, err := absClean(c.Root.Path)
+	if err != nil {
+		return err
+	}
+	client, err := remoteClient(root, c.Remote)
+	if err != nil {
+		return err
+	}
+	if err := client.RegisterWitness(c.Public, c.Label); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "registered witness %.16s\n", c.Public)
+	return nil
+}
+
+type VaultWitnessCosignCmd struct {
+	Remote string `cli:"remote" help:"remote name (default: the only one configured)"`
+	Root   *CLI   `internal:"ignore"`
+}
+
+func (c *VaultWitnessCosignCmd) Run() error {
+	root, err := absClean(c.Root.Path)
+	if err != nil {
+		return err
+	}
+	key, err := loadKey()
+	if err != nil {
+		return err
+	}
+	client, err := remoteClient(root, c.Remote)
+	if err != nil {
+		return err
+	}
+	sth, err := client.VaultSTH()
+	if err != nil {
+		return err
+	}
+	cs := fvsvault.CosignSTH(key.Private(), sth)
+	if err := client.Cosign(cs); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "cosigned tree size %d as %.16s\n", sth.TreeSize, key.Public())
+	return nil
+}
+
+// checkWitnesses fetches the registered witnesses and their cosignatures at the
+// pinned size and confirms they all agree on the pinned root.
+func checkWitnesses(client *remote.Client, pin fvsvault.Pin) error {
+	witnesses, err := client.Witnesses()
+	if err != nil {
+		return err
+	}
+	if len(witnesses) == 0 {
+		return nil
+	}
+	registered := map[string]bool{}
+	for _, wt := range witnesses {
+		registered[wt.Public] = true
+	}
+	cosigs, err := client.Cosignatures(pin.TreeSize)
+	if err != nil {
+		return err
+	}
+	n, err := fvsvault.CheckCosignatures(registered, pin.TreeSize, pin.RootHash, cosigs)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "%d of %d witnesses confirm the log at size %d\n", n, len(witnesses), pin.TreeSize)
 	return nil
 }

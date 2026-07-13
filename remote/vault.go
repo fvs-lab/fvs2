@@ -121,3 +121,78 @@ func uitoa(n uint64) string {
 	}
 	return string(b[i:])
 }
+
+// hubGetJSON performs an authenticated GET against a hub-root path.
+func (c *Client) hubGetJSON(path string, v any) error {
+	req, err := http.NewRequest(http.MethodGet, c.hubRoot()+path, nil)
+	if err != nil {
+		return err
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return unexpected(resp)
+	}
+	return json.NewDecoder(resp.Body).Decode(v)
+}
+
+func (c *Client) hubPost(path string, body any, wantStatus int) error {
+	payload, _ := json.Marshal(body)
+	req, err := http.NewRequest(http.MethodPost, c.hubRoot()+path, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != wantStatus {
+		return unexpected(resp)
+	}
+	return nil
+}
+
+// Witness is a registered log observer.
+type Witness struct {
+	Public string `json:"public"`
+	Label  string `json:"label,omitempty"`
+}
+
+// RegisterWitness enrolls a witness public key (admin).
+func (c *Client) RegisterWitness(public, label string) error {
+	return c.hubPost("/api/v1/vault/witnesses", map[string]string{"public": public, "label": label}, http.StatusCreated)
+}
+
+// Witnesses lists the registered witnesses.
+func (c *Client) Witnesses() ([]Witness, error) {
+	var out struct {
+		Witnesses []Witness `json:"witnesses"`
+	}
+	err := c.hubGetJSON("/api/v1/vault/witnesses", &out)
+	return out.Witnesses, err
+}
+
+// Cosign submits a witness cosignature over a tree head.
+func (c *Client) Cosign(cs vault.Cosignature) error {
+	return c.hubPost("/api/v1/vault/cosign", cs, http.StatusNoContent)
+}
+
+// Cosignatures lists the cosignatures stored at a tree size.
+func (c *Client) Cosignatures(size uint64) ([]vault.Cosignature, error) {
+	var out struct {
+		Cosignatures []vault.Cosignature `json:"cosignatures"`
+	}
+	err := c.hubGetJSON("/api/v1/vault/cosignatures?size="+url.QueryEscape(uitoa(size)), &out)
+	return out.Cosignatures, err
+}

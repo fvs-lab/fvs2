@@ -89,6 +89,9 @@ func (c *CLI) Before() error {
 	c.Vault.Root = c
 	c.Vault.Verify.Root = c
 	c.Vault.Monitor.Root = c
+	c.Vault.Witness.Root = c
+	c.Vault.Witness.Register.Root = c
+	c.Vault.Witness.Cosign.Root = c
 	return nil
 }
 

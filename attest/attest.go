@@ -134,6 +134,10 @@ func (k Key) SeedHex() string {
 	return hex.EncodeToString(k.priv.Seed())
 }
 
+// Private returns the raw signing key, for uses beyond attestations such as
+// witnessing transparency-log tree heads.
+func (k Key) Private() ed25519.PrivateKey { return k.priv }
+
 // Public returns the public key fingerprint in hex.
 func (k Key) Public() string {
 	pub := k.priv.Public().(ed25519.PublicKey)
