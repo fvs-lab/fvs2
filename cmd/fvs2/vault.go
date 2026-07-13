@@ -43,6 +43,7 @@ type VaultCmd struct {
 	Verify  VaultVerifyCmd  `cmd:"verify" help:"Verify a state's attestations against the transparency log"`
 	Monitor VaultMonitorCmd `cmd:"monitor" help:"Fetch the log's tree head and check it against the pin"`
 	Witness VaultWitnessCmd `cmd:"witness" help:"Register witnesses and cosign tree heads"`
+	Anchor  VaultAnchorCmd  `cmd:"anchor" help:"Anchor the log's tree head to Bitcoin via OpenTimestamps"`
 	Root    *CLI            `internal:"ignore"`
 }
 
@@ -134,7 +135,11 @@ func (c *VaultVerifyCmd) Run() error {
 			continue
 		}
 		guaranteed++
-		fmt.Fprintf(os.Stdout, "%-8s %.16s  guaranteed (leaf %d)\n", a.Role, a.Signer, proof.LeafIndex)
+		if proof.Anchor != nil && proof.Anchor.Status == "confirmed" {
+			fmt.Fprintf(os.Stdout, "%-8s %.16s  anchored (leaf %d, btc block %d)\n", a.Role, a.Signer, proof.LeafIndex, proof.Anchor.BitcoinBlock)
+		} else {
+			fmt.Fprintf(os.Stdout, "%-8s %.16s  guaranteed (leaf %d)\n", a.Role, a.Signer, proof.LeafIndex)
+		}
 	}
 	fmt.Fprintf(os.Stdout, "%.12s: %d guaranteed, %d signed-only, %d failed\n", state, guaranteed, plain, bad)
 	if bad > 0 {
@@ -255,5 +260,41 @@ func checkWitnesses(client *remote.Client, pin fvsvault.Pin) error {
 		return err
 	}
 	fmt.Fprintf(os.Stdout, "%d of %d witnesses confirm the log at size %d\n", n, len(witnesses), pin.TreeSize)
+	return nil
+}
+
+// ---- anchoring ----
+
+type VaultAnchorCmd struct {
+	Upgrade bool   `cli:"upgrade" help:"complete pending anchors against the calendars instead of submitting a new one"`
+	Remote  string `cli:"remote" help:"remote name (default: the only one configured)"`
+	Root    *CLI   `internal:"ignore"`
+}
+
+func (c *VaultAnchorCmd) Run() error {
+	root, err := absClean(c.Root.Path)
+	if err != nil {
+		return err
+	}
+	client, err := remoteClient(root, c.Remote)
+	if err != nil {
+		return err
+	}
+	if c.Upgrade {
+		if err := client.UpgradeAnchors(); err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stdout, "requested calendar upgrade of pending anchors")
+		return nil
+	}
+	a, err := client.AnchorHead()
+	if err != nil {
+		return err
+	}
+	if a.Status == "confirmed" {
+		fmt.Fprintf(os.Stdout, "tree size %d anchored to bitcoin block %d\n", a.Size, a.Height)
+	} else {
+		fmt.Fprintf(os.Stdout, "tree size %d submitted to calendars (pending bitcoin confirmation)\n", a.Size)
+	}
 	return nil
 }

@@ -196,3 +196,40 @@ func (c *Client) Cosignatures(size uint64) ([]vault.Cosignature, error) {
 	err := c.hubGetJSON("/api/v1/vault/cosignatures?size="+url.QueryEscape(uitoa(size)), &out)
 	return out.Cosignatures, err
 }
+
+// Anchor is a tree head's public-timestamping status.
+type Anchor struct {
+	Size   uint64 `json:"size"`
+	Root   string `json:"root"`
+	Status string `json:"status"`
+	Height uint64 `json:"height,omitempty"`
+}
+
+// AnchorHead submits the log's current tree head for public timestamping (admin).
+func (c *Client) AnchorHead() (Anchor, error) {
+	payload, _ := json.Marshal(struct{}{})
+	req, err := http.NewRequest(http.MethodPost, c.hubRoot()+"/api/v1/vault/anchor", bytes.NewReader(payload))
+	if err != nil {
+		return Anchor{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return Anchor{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		return Anchor{}, unexpected(resp)
+	}
+	var a Anchor
+	return a, json.NewDecoder(resp.Body).Decode(&a)
+}
+
+// UpgradeAnchors asks the hub to complete pending anchors against the
+// calendars (admin).
+func (c *Client) UpgradeAnchors() error {
+	return c.hubPost("/api/v1/vault/anchor/upgrade", struct{}{}, http.StatusNoContent)
+}
