@@ -30,6 +30,14 @@ type CommitResult struct {
 	FileCount int
 }
 
+type commitBlockStore struct {
+	*core.DiskBlockStore
+}
+
+func (s commitBlockStore) Put(data []byte) (core.BlockID, error) {
+	return s.PutDeferred(data)
+}
+
 // FileEntry aliases the state file entry for external consumers.
 type FileEntry = meta.FileEntry
 
@@ -110,6 +118,7 @@ func CommitContext(ctx context.Context, root, message string, allowEmpty bool, v
 	if err != nil {
 		return CommitResult{}, err
 	}
+	commitStore := commitBlockStore{store}
 
 	var head *meta.Commit
 	headID, err := meta.ResolveHeadCommit(root)
@@ -133,7 +142,7 @@ func CommitContext(ctx context.Context, root, message string, allowEmpty bool, v
 		}
 	}
 
-	files, err := snapshot(ctx, root, store, cfg.ChunkParams(), cfg.ChunkingPolicy, headFiles, verbose)
+	files, err := snapshot(ctx, root, commitStore, cfg.ChunkParams(), cfg.ChunkingPolicy, headFiles, verbose)
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -145,7 +154,7 @@ func CommitContext(ctx context.Context, root, message string, allowEmpty bool, v
 	id := meta.NewCommitID(now, message, files)
 	commit := meta.Commit{ID: id, Format: cfg.Format, TimeUTC: now.Unix(), Message: message, BlockSize: cfg.BlockSize, ChunkingPolicy: cfg.ChunkingPolicy}
 	if cfg.Format >= 3 {
-		rootTree, err := meta.WriteTree(store, files)
+		rootTree, err := meta.WriteTree(commitStore, files)
 		if err != nil {
 			return CommitResult{}, err
 		}
@@ -156,6 +165,9 @@ func CommitContext(ctx context.Context, root, message string, allowEmpty bool, v
 		}
 	} else {
 		commit.Files = files
+	}
+	if err := store.Sync(); err != nil {
+		return CommitResult{}, err
 	}
 	if err := writeJSONAtomic(meta.CommitPath(root, id), commit); err != nil {
 		return CommitResult{}, err
