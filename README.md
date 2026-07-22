@@ -116,6 +116,25 @@ Notes:
   force a state anyway.
 - empty files and symlinks are versioned and restored faithfully.
 
+## Excluding files with .fvsignore
+
+A `.fvsignore` file at the repo root keeps build output, caches and other
+noise out of every state `commit` creates. Syntax is a subset of
+`.gitignore`:
+
+```
+# comment
+*.log            # extension, matches at any depth
+build/           # directory, matches at any depth, trailing / required
+/dist            # leading / anchors the pattern to the repo root
+!keep.log        # re-include a path an earlier pattern excluded
+```
+
+Rules are evaluated top to bottom and the last match wins. `*`/`?` match
+within one path segment (no `**`). An excluded directory is never descended
+into, so its contents are not hashed. `.fvsignore` itself is committed like
+any other tracked file unless a rule excludes it.
+
 ## Mounting a state
 
 Mounting exposes committed states through the separate `fvs2d` FUSE daemon:

@@ -37,6 +37,55 @@ func TestCommitCreatesRevisionAndSkipsNoop(t *testing.T) {
 	}
 }
 
+// TestCommitHonorsFvsignore checks the .fvsignore rules end to end: an
+// excluded file, an excluded directory (whose contents must never even be
+// hashed) and a re-included path via negation.
+func TestCommitHonorsFvsignore(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root, 0); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, root, ".fvsignore", "*.log\nbuild/\n!keep.log\n")
+	writeTestFile(t, root, "main.go", "package main")
+	writeTestFile(t, root, "debug.log", "noise")
+	writeTestFile(t, root, "keep.log", "kept")
+	writeTestFile(t, root, "build/output.bin", "binary junk")
+
+	res, err := Commit(root, "with ignore rules", false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := StateFiles(root, res.StateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, f := range files {
+		got[f.Path] = true
+	}
+	for _, want := range []string{".fvsignore", "main.go", "keep.log"} {
+		if !got[want] {
+			t.Errorf("expected %s to be committed, files = %v", want, got)
+		}
+	}
+	for _, excluded := range []string{"debug.log", "build/output.bin"} {
+		if got[excluded] {
+			t.Errorf("expected %s to be excluded by .fvsignore, files = %v", excluded, got)
+		}
+	}
+}
+
+func writeTestFile(t *testing.T, root, rel, content string) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestInitIsIdempotent(t *testing.T) {
 	root := t.TempDir()
 	if _, err := Init(root, 8192); err != nil {

@@ -227,8 +227,12 @@ func sameMtime(old meta.FileEntry, t time.Time) bool {
 }
 
 func snapshot(ctx context.Context, root string, store core.BlockStore, params core.ChunkParams, policy int, head map[string]meta.FileEntry, verbose io.Writer) ([]meta.FileEntry, error) {
+	ignore, err := loadIgnore(root)
+	if err != nil {
+		return nil, err
+	}
 	var files []meta.FileEntry
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -252,6 +256,13 @@ func snapshot(ctx context.Context, root string, store core.BlockStore, params co
 			return nil
 		}
 		rel = filepath.ToSlash(rel)
+
+		if ignore.Match(rel, entry.IsDir()) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 
 		if entry.Type()&os.ModeSymlink != 0 {
 			target, err := os.Readlink(path)
