@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"fvs2/internal/meta"
+	"github.com/fvs-lab/fvs2/internal/meta"
 )
 
 // TestPackedRepoEndToEnd exercises the whole pack path: several versions of

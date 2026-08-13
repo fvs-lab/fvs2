@@ -3,7 +3,7 @@ package meta
 import (
 	"sort"
 
-	core "fvs-v2-core"
+	core "github.com/fvs-lab/core"
 )
 
 // OrderedLiveBlocks returns every live block of the repo in lineage order:

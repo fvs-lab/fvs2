@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	core "fvs-v2-core"
+	core "github.com/fvs-lab/core"
 )
 
 func TestSingleBlockPutRejectsOversizedBody(t *testing.T) {

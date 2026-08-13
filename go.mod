@@ -1,11 +1,9 @@
-module fvs2
+module github.com/fvs-lab/fvs2
 
 go 1.25.0
 
-replace fvs-v2-core => ../core
-
 require (
-	fvs-v2-core v0.0.0-00010101000000-000000000000
+	github.com/fvs-lab/core v0.1.2
 	github.com/johannesboyne/gofakes3 v1.2.0
 	github.com/minio/minio-go/v7 v7.2.1
 	github.com/mirkobrombin/go-cli-builder/v2 v2.2.1

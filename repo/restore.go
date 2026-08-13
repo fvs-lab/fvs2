@@ -10,10 +10,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
-	core "fvs-v2-core"
-	"fvs2/internal/meta"
+	core "github.com/fvs-lab/core"
+	"github.com/fvs-lab/fvs2/internal/meta"
 )
 
 type State struct {
@@ -180,7 +181,33 @@ func restoreCommit(ctx context.Context, dest string, store core.BlockStore, file
 			fmt.Fprintf(verbose, "restoring: %s\n", fe.Path)
 		}
 
-		if fe.Link != "" {
+		switch fe.Kind {
+		case "dir":
+			if info, err := os.Lstat(outPath); err == nil && !info.IsDir() {
+				if err := os.Remove(outPath); err != nil {
+					return err
+				}
+			}
+			if err := os.MkdirAll(outPath, os.FileMode(fe.Mode)); err != nil {
+				return err
+			}
+			if err := os.Chmod(outPath, os.FileMode(fe.Mode)); err != nil {
+				return err
+			}
+			_ = os.Chtimes(outPath, time.Now(), fileMtime(fe))
+			continue
+		case "fifo":
+			if info, err := os.Lstat(outPath); err == nil && info.Mode()&os.ModeNamedPipe != 0 && uint32(info.Mode().Perm()) == fe.Mode {
+				continue
+			}
+			_ = os.Remove(outPath)
+			if err := syscall.Mkfifo(outPath, fe.Mode); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if fe.Kind == "symlink" || fe.Link != "" {
 			if cur, err := os.Readlink(outPath); err == nil && cur == fe.Link {
 				continue
 			}
@@ -387,6 +414,9 @@ func cleanDest(dest string, files []meta.FileEntry, verbose io.Writer) error {
 	})
 	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
 	for _, dir := range dirs {
+		if want[dir] {
+			continue
+		}
 		entries, err := os.ReadDir(dir)
 		if err == nil && len(entries) == 0 {
 			_ = os.Remove(dir)

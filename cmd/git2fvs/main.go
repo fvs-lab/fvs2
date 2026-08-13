@@ -23,7 +23,7 @@ import (
 	"strings"
 	"time"
 
-	fvsrepo "fvs2/repo"
+	fvsrepo "github.com/fvs-lab/fvs2/repo"
 )
 
 type options struct {

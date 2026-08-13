@@ -5,8 +5,8 @@ import (
 	"os"
 	"time"
 
-	core "fvs-v2-core"
-	"fvs2/internal/meta"
+	core "github.com/fvs-lab/core"
+	"github.com/fvs-lab/fvs2/internal/meta"
 )
 
 type FsckCmd struct {

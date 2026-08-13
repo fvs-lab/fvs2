@@ -3,11 +3,12 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	core "fvs-v2-core"
-	"fvs2/internal/meta"
+	core "github.com/fvs-lab/core"
+	"github.com/fvs-lab/fvs2/internal/meta"
 )
 
 type DropCmd struct {
@@ -69,6 +70,14 @@ func (c *GcCmd) Run() error {
 	root, err := absClean(c.Root.Path)
 	if err != nil {
 		return err
+	}
+	configuredBlocks, err := meta.BlockStorePath(root)
+	if err != nil {
+		return err
+	}
+	localBlocks := filepath.Join(root, ".fvs2", "blocks")
+	if filepath.Clean(configuredBlocks) != filepath.Clean(localBlocks) {
+		return fmt.Errorf("repository uses a shared block store; run gc through the store owner with every repository")
 	}
 	lock, err := meta.LockRepo(root, 5*time.Second)
 	if err != nil {

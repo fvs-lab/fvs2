@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	core "fvs-v2-core"
-	"fvs2/attest"
-	"fvs2/internal/meta"
-	fvsrepo "fvs2/repo"
+	core "github.com/fvs-lab/core"
+	"github.com/fvs-lab/fvs2/attest"
+	"github.com/fvs-lab/fvs2/internal/meta"
+	fvsrepo "github.com/fvs-lab/fvs2/repo"
 
 	clibuilder "github.com/mirkobrombin/go-cli-builder/v2/pkg/cli"
 )

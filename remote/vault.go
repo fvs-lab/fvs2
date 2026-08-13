@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"fvs2/vault"
+	"github.com/fvs-lab/fvs2/vault"
 )
 
 // hubRoot strips the repository path from the base URL, leaving the hub origin

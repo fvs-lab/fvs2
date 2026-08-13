@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"fvs2/internal/meta"
-	"fvs2/remote"
-	fvsrepo "fvs2/repo"
+	"github.com/fvs-lab/fvs2/internal/meta"
+	"github.com/fvs-lab/fvs2/remote"
+	fvsrepo "github.com/fvs-lab/fvs2/repo"
 )
 
 func initRepo(t *testing.T, dir string, files map[string]string) string {

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	core "fvs-v2-core"
+	core "github.com/fvs-lab/core"
 
-	"fvs2/attest"
+	"github.com/fvs-lab/fvs2/attest"
 )
 
 // batchBytes is the upload batch target: blocks are grouped until a batch

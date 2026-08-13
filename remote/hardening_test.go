@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	core "fvs-v2-core"
+	core "github.com/fvs-lab/core"
 
 	"github.com/johannesboyne/gofakes3"
 	"github.com/johannesboyne/gofakes3/backend/s3mem"

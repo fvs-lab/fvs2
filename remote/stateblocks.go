@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	core "fvs-v2-core"
-	"fvs2/internal/meta"
+	core "github.com/fvs-lab/core"
+	"github.com/fvs-lab/fvs2/internal/meta"
 )
 
 // CollectStateBlocks returns every block a state document references: inline

@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
-	core "fvs-v2-core"
-	"fvs2/internal/meta"
+	core "github.com/fvs-lab/core"
+	"github.com/fvs-lab/fvs2/internal/meta"
 )
 
 // plantCommit writes a hand-crafted commit document and indexes it, the way
@@ -41,15 +42,18 @@ func fakeID(seed byte) string {
 
 func TestRestoreRejectsEscapingPaths(t *testing.T) {
 	outside := t.TempDir()
-	for i, evil := range []string{
+	evilPaths := []string{
 		"../escape.txt",
 		"/abs.txt",
 		"sub/../../escape.txt",
 		"sub/..",
 		".",
 		"",
-		"a\\..\\b",
-	} {
+	}
+	if runtime.GOOS == "windows" {
+		evilPaths = append(evilPaths, "a\\..\\b")
+	}
+	for i, evil := range evilPaths {
 		root := t.TempDir()
 		if _, err := Init(root, 0); err != nil {
 			t.Fatal(err)
@@ -81,7 +85,11 @@ func TestRestoreRejectsEscapingPaths(t *testing.T) {
 }
 
 func TestRestoreRejectsMaliciousTreeEntryNames(t *testing.T) {
-	for i, evil := range []string{"..", ".", "", "a/b", "a\\b"} {
+	evilNames := []string{"..", ".", "", "a/b"}
+	if runtime.GOOS == "windows" {
+		evilNames = append(evilNames, "a\\b")
+	}
+	for i, evil := range evilNames {
 		root := t.TempDir()
 		if _, err := Init(root, 0); err != nil {
 			t.Fatal(err)

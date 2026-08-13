@@ -2,6 +2,7 @@ package meta
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 )
 
@@ -19,7 +20,7 @@ func ValidateEntryName(name string) error {
 	case ".", "..":
 		return fmt.Errorf("invalid entry name %q", name)
 	}
-	if strings.ContainsAny(name, "/\\\x00") {
+	if strings.ContainsAny(name, "/\x00") || runtime.GOOS == "windows" && strings.ContainsRune(name, '\\') {
 		return fmt.Errorf("invalid entry name %q", name)
 	}
 	return nil

@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	core "fvs-v2-core"
+	core "github.com/fvs-lab/core"
 )
 
 // namespaceHeader carries the ref namespace (an account name or a team) a

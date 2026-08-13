@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"fvs2/attest"
+	"github.com/fvs-lab/fvs2/attest"
 )
 
 func (s *Server) attestDir() string { return filepath.Join(s.root, "attestations") }

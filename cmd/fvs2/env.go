@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"fvs2/environment"
+	"github.com/fvs-lab/fvs2/environment"
 )
 
 type EnvCmd struct {

@@ -3,7 +3,7 @@ package meta
 import (
 	"testing"
 
-	core "fvs-v2-core"
+	core "github.com/fvs-lab/core"
 )
 
 // countingStore is an in-memory block store that counts reads, so tests can

@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"fvs2/internal/meta"
+	"github.com/fvs-lab/fvs2/internal/meta"
 )
 
 func TestCommitContextCancellation(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	core "fvs-v2-core"
+	core "github.com/fvs-lab/core"
 )
 
 // putEmptyState uploads a minimal valid state so tests can point refs at it.

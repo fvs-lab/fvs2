@@ -1,6 +1,6 @@
 package repo
 
-import "fvs2/internal/meta"
+import "github.com/fvs-lab/fvs2/internal/meta"
 
 // Typed errors, re-exported from the internal metadata package so embedders
 // (the mount daemon, the hub) can classify failures without string matching

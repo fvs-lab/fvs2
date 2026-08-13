@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"fvs2/internal/meta"
+	"github.com/fvs-lab/fvs2/internal/meta"
 )
 
 // ValidateState checks a state document before the server accepts it or lets

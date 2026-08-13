@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"fvs2/internal/meta"
+	"github.com/fvs-lab/fvs2/internal/meta"
 )
 
 func TestResolveCommitPrecedence(t *testing.T) {

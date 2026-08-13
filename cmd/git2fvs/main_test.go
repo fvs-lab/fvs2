@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"fvs2/remote"
-	fvsrepo "fvs2/repo"
+	"github.com/fvs-lab/fvs2/remote"
+	fvsrepo "github.com/fvs-lab/fvs2/repo"
 )
 
 func gitT(t *testing.T, dir string, args ...string) {

@@ -3,7 +3,7 @@ package repo
 import (
 	"testing"
 
-	"fvs2/attest"
+	"github.com/fvs-lab/fvs2/attest"
 )
 
 func TestAttestationsRoundTrip(t *testing.T) {

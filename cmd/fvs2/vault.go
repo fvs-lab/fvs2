@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"os"
 
-	"fvs2/attest"
-	"fvs2/remote"
-	fvsrepo "fvs2/repo"
-	fvsvault "fvs2/vault"
+	"github.com/fvs-lab/fvs2/attest"
+	"github.com/fvs-lab/fvs2/remote"
+	fvsrepo "github.com/fvs-lab/fvs2/repo"
+	fvsvault "github.com/fvs-lab/fvs2/vault"
 )
 
 // ---- key deposit ----

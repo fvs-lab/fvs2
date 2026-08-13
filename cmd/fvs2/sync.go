@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"fvs2/internal/meta"
-	"fvs2/remote"
-	fvsrepo "fvs2/repo"
+	"github.com/fvs-lab/fvs2/internal/meta"
+	"github.com/fvs-lab/fvs2/remote"
+	fvsrepo "github.com/fvs-lab/fvs2/repo"
 )
 
 type RemoteCmd struct {

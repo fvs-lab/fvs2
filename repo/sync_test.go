@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"fvs2/internal/meta"
-	"fvs2/remote"
+	"github.com/fvs-lab/fvs2/internal/meta"
+	"github.com/fvs-lab/fvs2/remote"
 )
 
 func newSyncRepo(t *testing.T) string {

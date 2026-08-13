@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	core "fvs-v2-core"
+	core "github.com/fvs-lab/core"
 )
 
 // Format 3 stores a state's file list as content-addressed tree objects in
@@ -46,6 +46,8 @@ type TreeEntry struct {
 	// one file does not re-serialize its siblings' lists into the parent
 	// tree object.
 	Manifest core.BlockID `json:"mf,omitempty"`
+	// ContentDigest is the producer's optional whole-file digest.
+	ContentDigest string `json:"h,omitempty"`
 }
 
 // manifest is the indirect chunk list of one file.
@@ -128,8 +130,20 @@ func (c *TreeCache) manifest(store BlockGetter, id core.BlockID) (manifest, erro
 func WriteTree(store BlockPutter, files []FileEntry) (core.BlockID, error) {
 	children := map[string][]TreeEntry{}
 	dirs := map[string]bool{"": true}
+	dirMeta := map[string]FileEntry{}
 
 	for _, f := range files {
+		if f.Kind == "dir" {
+			dirs[f.Path] = true
+			dirMeta[f.Path] = f
+			for d := parentDir(f.Path); ; d = parentDir(d) {
+				dirs[d] = true
+				if d == "" {
+					break
+				}
+			}
+			continue
+		}
 		dir := path.Dir(f.Path)
 		if dir == "." {
 			dir = ""
@@ -141,21 +155,35 @@ func WriteTree(store BlockPutter, files []FileEntry) (core.BlockID, error) {
 			}
 		}
 		entry := TreeEntry{
-			Name:      path.Base(f.Path),
-			Kind:      "f",
-			Mode:      f.Mode,
-			Size:      f.Size,
-			ModTime:   f.ModTime,
-			ModTimeNS: f.ModTimeNS,
-			Blocks:    f.Blocks,
-			Sizes:     f.BlockSizes,
+			Name:          path.Base(f.Path),
+			Kind:          "f",
+			Mode:          f.Mode,
+			Size:          f.Size,
+			ModTime:       f.ModTime,
+			ModTimeNS:     f.ModTimeNS,
+			Blocks:        f.Blocks,
+			Sizes:         f.BlockSizes,
+			ContentDigest: f.ContentDigest,
 		}
-		if f.Link != "" {
+		switch f.Kind {
+		case "symlink":
 			entry.Kind = "l"
 			entry.Link = f.Link
 			entry.Blocks = nil
 			entry.Sizes = nil
-		} else if len(entry.Blocks) > manifestThreshold {
+		case "fifo":
+			entry.Kind = "p"
+			entry.Blocks = nil
+			entry.Sizes = nil
+		default:
+			if f.Link != "" {
+				entry.Kind = "l"
+				entry.Link = f.Link
+				entry.Blocks = nil
+				entry.Sizes = nil
+			}
+		}
+		if entry.Kind == "f" && len(entry.Blocks) > manifestThreshold {
 			blob, err := json.Marshal(manifest{Blocks: entry.Blocks, Sizes: entry.Sizes})
 			if err != nil {
 				return "", err
@@ -182,7 +210,13 @@ func WriteTree(store BlockPutter, files []FileEntry) (core.BlockID, error) {
 	for _, d := range sorted {
 		entries := children[d]
 		for name, sub := range subdirsOf(d, dirs) {
-			entries = append(entries, TreeEntry{Name: name, Kind: "d", Tree: ids[sub]})
+			entry := TreeEntry{Name: name, Kind: "d", Mode: 0o755, Tree: ids[sub]}
+			if info, ok := dirMeta[sub]; ok {
+				entry.Mode = info.Mode
+				entry.ModTime = info.ModTime
+				entry.ModTimeNS = info.ModTimeNS
+			}
+			entries = append(entries, entry)
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 		blob, err := json.Marshal(entries)
@@ -207,7 +241,7 @@ type Reach struct {
 
 // walkTree flattens the tree rooted at id in a single pass, collecting the
 // metadata object ids as it goes. cache may be nil.
-func walkTree(store BlockGetter, id core.BlockID, cache *TreeCache) (Reach, error) {
+func walkTree(store BlockGetter, id core.BlockID, cache *TreeCache, includeDirs bool) (Reach, error) {
 	var out Reach
 	var walk func(prefix string, tree core.BlockID) error
 	walk = func(prefix string, tree core.BlockID) error {
@@ -220,11 +254,20 @@ func walkTree(store BlockGetter, id core.BlockID, cache *TreeCache) (Reach, erro
 			full := path.Join(prefix, e.Name)
 			switch e.Kind {
 			case "d":
+				if includeDirs {
+					mode := e.Mode
+					if mode == 0 {
+						mode = 0o755
+					}
+					out.Files = append(out.Files, FileEntry{Path: full, Kind: "dir", Mode: mode, ModTime: e.ModTime, ModTimeNS: e.ModTimeNS})
+				}
 				if err := walk(full, e.Tree); err != nil {
 					return err
 				}
 			case "l":
-				out.Files = append(out.Files, FileEntry{Path: full, Mode: e.Mode, ModTime: e.ModTime, ModTimeNS: e.ModTimeNS, Link: e.Link})
+				out.Files = append(out.Files, FileEntry{Path: full, Kind: "symlink", Mode: e.Mode, ModTime: e.ModTime, ModTimeNS: e.ModTimeNS, Link: e.Link})
+			case "p":
+				out.Files = append(out.Files, FileEntry{Path: full, Kind: "fifo", Mode: e.Mode, ModTime: e.ModTime, ModTimeNS: e.ModTimeNS})
 			default:
 				blocks, sizes := e.Blocks, e.Sizes
 				if e.Manifest != "" {
@@ -237,7 +280,7 @@ func walkTree(store BlockGetter, id core.BlockID, cache *TreeCache) (Reach, erro
 				}
 				out.Files = append(out.Files, FileEntry{
 					Path: full, Mode: e.Mode, Size: e.Size, ModTime: e.ModTime, ModTimeNS: e.ModTimeNS,
-					Blocks: blocks, BlockSizes: sizes,
+					Blocks: blocks, BlockSizes: sizes, ContentDigest: e.ContentDigest,
 				})
 			}
 		}
@@ -253,7 +296,7 @@ func walkTree(store BlockGetter, id core.BlockID, cache *TreeCache) (Reach, erro
 // ReadTree flattens the tree rooted at id back into the format-2 file list
 // shape every consumer already understands.
 func ReadTree(store BlockGetter, id core.BlockID) ([]FileEntry, error) {
-	reach, err := walkTree(store, id, nil)
+	reach, err := walkTree(store, id, nil, false)
 	if err != nil {
 		return nil, err
 	}
@@ -263,7 +306,7 @@ func ReadTree(store BlockGetter, id core.BlockID) ([]FileEntry, error) {
 // TreeBlocks collects every tree and manifest object id reachable from the
 // root, for gc marking and sync transfers.
 func TreeBlocks(store BlockGetter, id core.BlockID) ([]core.BlockID, error) {
-	reach, err := walkTree(store, id, nil)
+	reach, err := walkTree(store, id, nil, false)
 	if err != nil {
 		return nil, err
 	}

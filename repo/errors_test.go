@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"fvs2/internal/meta"
+	"github.com/fvs-lab/fvs2/internal/meta"
 )
 
 func TestTypedErrorClassification(t *testing.T) {

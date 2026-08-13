@@ -5,9 +5,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"fvs2/attest"
-	"fvs2/internal/meta"
-	"fvs2/repo"
+	"github.com/fvs-lab/fvs2/attest"
+	"github.com/fvs-lab/fvs2/internal/meta"
+	"github.com/fvs-lab/fvs2/repo"
 )
 
 // keyPath is where the signing identity lives by default: one identity per

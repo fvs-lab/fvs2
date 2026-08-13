@@ -10,15 +10,16 @@ import (
 	"strings"
 	"time"
 
-	core "fvs-v2-core"
+	core "github.com/fvs-lab/core"
 
 	"github.com/zeebo/blake3"
 )
 
 // CurrentFormat is the repo format written by Init. Format 1 (implicit when
 // the field is absent) uses fixed-size blocks; format 2 uses content-defined
-// chunking and records per-block sizes in commits.
-const CurrentFormat = 3
+// chunking; format 3 stores directory trees as blocks; format 4 records
+// directory and special-file entries.
+const CurrentFormat = 4
 
 type Config struct {
 	// ChunkingPolicy selects how chunk parameters are chosen per file.
@@ -29,6 +30,9 @@ type Config struct {
 	// Format is the on-disk repo format version. 0 means 1 (legacy).
 	Format    int `json:"format,omitempty"`
 	BlockSize int `json:"block_size"`
+	// BlocksPath points at a shared block store. Empty keeps the historical
+	// repository-local .fvs2/blocks directory.
+	BlocksPath string `json:"blocks_path,omitempty"`
 	// Chunking holds the content-defined chunking parameters for format >= 2.
 	Chunking *ChunkingConfig `json:"chunking,omitempty"`
 }
@@ -94,7 +98,7 @@ func CommitReach(store BlockGetter, c Commit, cache *TreeCache) (Reach, error) {
 	if c.RootTree == "" {
 		return Reach{Files: c.Files}, nil
 	}
-	return walkTree(store, c.RootTree, cache)
+	return walkTree(store, c.RootTree, cache, c.Format >= 4)
 }
 
 // CommitBlocks returns every block a state references: tree objects first
@@ -130,7 +134,10 @@ func CommitBlocksCached(store BlockGetter, c Commit, cache *TreeCache) ([]core.B
 }
 
 type FileEntry struct {
-	Path    string `json:"path"`
+	Path string `json:"path"`
+	// Kind is empty for legacy regular files. New states use file, dir,
+	// symlink or fifo explicitly.
+	Kind    string `json:"kind,omitempty"`
 	Mode    uint32 `json:"mode"`
 	Size    int64  `json:"size"`
 	ModTime int64  `json:"mod_time"`
@@ -146,6 +153,9 @@ type FileEntry struct {
 	// Link is the target of a symbolic link. When non-empty the entry
 	// represents a symlink (not a regular file) and Blocks is empty.
 	Link string `json:"link,omitempty"`
+	// ContentDigest is an optional whole-file digest supplied or verified by
+	// the producer. It is independent from FVS block identifiers.
+	ContentDigest string `json:"content_digest,omitempty"`
 }
 
 var ErrNotInitialized = errors.New("repo not initialized (run: fvs2 init)")
@@ -159,11 +169,11 @@ var (
 	ErrFormatUnsupported = errors.New("repo format not supported by this build")
 )
 
-func metaDir(root string) string    { return filepath.Join(root, ".fvs2") }
-func blocksDir(root string) string  { return filepath.Join(metaDir(root), "blocks") }
-func commitsDir(root string) string { return filepath.Join(metaDir(root), "commits") }
-func configPath(root string) string { return filepath.Join(metaDir(root), "config.json") }
-func indexPath(root string) string  { return filepath.Join(metaDir(root), "index.json") }
+func metaDir(root string) string          { return filepath.Join(root, ".fvs2") }
+func defaultBlocksDir(root string) string { return filepath.Join(metaDir(root), "blocks") }
+func commitsDir(root string) string       { return filepath.Join(metaDir(root), "commits") }
+func configPath(root string) string       { return filepath.Join(metaDir(root), "config.json") }
+func indexPath(root string) string        { return filepath.Join(metaDir(root), "index.json") }
 
 func ensureDir(p string) error { return os.MkdirAll(p, 0o755) }
 
@@ -183,13 +193,32 @@ func policyForFormat(format int) int {
 }
 
 func InitWithFormat(root string, blockSize, format int) error {
+	return InitWithStorage(root, blockSize, format, "")
+}
+
+// InitWithStorage initializes a repository whose blocks may live outside the
+// metadata directory. The configured path is made absolute so moving the
+// process working directory cannot redirect later reads.
+func InitWithStorage(root string, blockSize, format int, blocksPath string) error {
 	if blockSize <= 0 {
 		blockSize = 4096
 	}
 	if format < 2 || format > CurrentFormat {
 		return fmt.Errorf("unsupported init format %d", format)
 	}
-	if err := ensureDir(blocksDir(root)); err != nil {
+	if blocksPath != "" {
+		var err error
+		blocksPath, err = filepath.Abs(blocksPath)
+		if err != nil {
+			return err
+		}
+		blocksPath = filepath.Clean(blocksPath)
+	}
+	resolvedBlocks := blocksPath
+	if resolvedBlocks == "" {
+		resolvedBlocks = defaultBlocksDir(root)
+	}
+	if err := ensureDir(resolvedBlocks); err != nil {
 		return err
 	}
 	if err := ensureDir(commitsDir(root)); err != nil {
@@ -201,6 +230,7 @@ func InitWithFormat(root string, blockSize, format int) error {
 		ChunkingPolicy: policyForFormat(format),
 		Format:         format,
 		BlockSize:      blockSize,
+		BlocksPath:     blocksPath,
 		Chunking: &ChunkingConfig{
 			MinSize: params.Min,
 			AvgSize: params.Avg,
@@ -318,7 +348,23 @@ func ResolveCommitID(root, prefix string) (string, error) {
 }
 
 func NewBlockStore(root string) (*core.DiskBlockStore, error) {
-	return core.NewDiskBlockStore(blocksDir(root))
+	path, err := BlockStorePath(root)
+	if err != nil {
+		return nil, err
+	}
+	return core.NewDiskBlockStore(path)
+}
+
+// BlockStorePath resolves the repository's configured block-store path.
+func BlockStorePath(root string) (string, error) {
+	cfg, err := LoadConfig(root)
+	if err != nil {
+		return "", err
+	}
+	if cfg.BlocksPath != "" {
+		return filepath.Clean(cfg.BlocksPath), nil
+	}
+	return defaultBlocksDir(root), nil
 }
 
 // DeleteCommit removes a state. The index entry is removed first, so a crash

@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"fvs2/internal/meta"
+	"github.com/fvs-lab/fvs2/internal/meta"
 )
 
 // ResolveCommit resolves which state to mount or restore: an explicit state

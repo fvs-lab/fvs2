@@ -7,10 +7,10 @@ import (
 	"os"
 	"time"
 
-	core "fvs-v2-core"
-	"fvs2/attest"
-	"fvs2/internal/meta"
-	"fvs2/remote"
+	core "github.com/fvs-lab/core"
+	"github.com/fvs-lab/fvs2/attest"
+	"github.com/fvs-lab/fvs2/internal/meta"
+	"github.com/fvs-lab/fvs2/remote"
 )
 
 // Remote aliases the remote configuration so external embedders can drive

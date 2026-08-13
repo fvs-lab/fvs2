@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"fvs2/internal/meta"
+	"github.com/fvs-lab/fvs2/internal/meta"
 )
 
 func newRepo(t *testing.T) (string, *CLI) {

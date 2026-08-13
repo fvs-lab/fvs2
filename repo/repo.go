@@ -14,13 +14,20 @@ import (
 	"strings"
 	"time"
 
-	core "fvs-v2-core"
-	"fvs2/internal/meta"
+	core "github.com/fvs-lab/core"
+	"github.com/fvs-lab/fvs2/internal/meta"
 )
 
 type Repository struct {
-	Path      string
-	BlockSize int
+	Path       string
+	BlockSize  int
+	BlocksPath string
+}
+
+type InitOptions struct {
+	BlockSize  int
+	Format     int
+	BlocksPath string
 }
 
 type CommitResult struct {
@@ -61,14 +68,17 @@ func StateFiles(root, id string) ([]FileEntry, error) {
 
 // InitFormat initializes a repository pinned to an explicit on-disk format.
 func InitFormat(root string, blockSize, format int) (Repository, error) {
-	return initRepo(root, blockSize, format)
+	return InitWithOptions(root, InitOptions{BlockSize: blockSize, Format: format})
 }
 
 func Init(root string, blockSize int) (Repository, error) {
-	return initRepo(root, blockSize, meta.CurrentFormat)
+	return InitWithOptions(root, InitOptions{BlockSize: blockSize, Format: meta.CurrentFormat})
 }
 
-func initRepo(root string, blockSize, format int) (Repository, error) {
+// InitWithOptions initializes repository metadata and optionally points it at
+// a block store shared with other repositories.
+func InitWithOptions(root string, opts InitOptions) (Repository, error) {
+	blockSize, format := opts.BlockSize, opts.Format
 	if format == 0 {
 		format = meta.CurrentFormat
 	}
@@ -80,18 +90,44 @@ func initRepo(root string, blockSize, format int) (Repository, error) {
 		if blockSize > 0 && blockSize != cfg.BlockSize {
 			return Repository{}, fmt.Errorf("repository already uses block size %d", cfg.BlockSize)
 		}
-		return Repository{Path: root, BlockSize: cfg.BlockSize}, nil
+		blocksPath, err := meta.BlockStorePath(root)
+		if err != nil {
+			return Repository{}, err
+		}
+		if opts.BlocksPath != "" {
+			requested, err := filepath.Abs(opts.BlocksPath)
+			if err != nil {
+				return Repository{}, err
+			}
+			if filepath.Clean(requested) != blocksPath {
+				return Repository{}, fmt.Errorf("repository already uses block store %s", blocksPath)
+			}
+		}
+		return Repository{Path: root, BlockSize: cfg.BlockSize, BlocksPath: blocksPath}, nil
 	} else if !errors.Is(err, meta.ErrNotInitialized) {
 		return Repository{}, err
 	}
-	if err := meta.InitWithFormat(root, blockSize, format); err != nil {
+	if err := meta.InitWithStorage(root, blockSize, format, opts.BlocksPath); err != nil {
 		return Repository{}, err
 	}
 	cfg, err := meta.LoadConfig(root)
 	if err != nil {
 		return Repository{}, err
 	}
-	return Repository{Path: root, BlockSize: cfg.BlockSize}, nil
+	blocksPath, err := meta.BlockStorePath(root)
+	if err != nil {
+		return Repository{}, err
+	}
+	return Repository{Path: root, BlockSize: cfg.BlockSize, BlocksPath: blocksPath}, nil
+}
+
+// BlockStorePath returns the resolved block-store directory for root.
+func BlockStorePath(root string) (string, error) {
+	root, err := absolute(root)
+	if err != nil {
+		return "", err
+	}
+	return meta.BlockStorePath(root)
 }
 
 func Commit(root, message string, allowEmpty bool, verbose io.Writer) (CommitResult, error) {
@@ -142,7 +178,7 @@ func CommitContext(ctx context.Context, root, message string, allowEmpty bool, v
 		}
 	}
 
-	files, err := snapshot(ctx, root, commitStore, cfg.ChunkParams(), cfg.ChunkingPolicy, headFiles, verbose)
+	files, err := snapshot(ctx, root, commitStore, cfg.ChunkParams(), cfg.ChunkingPolicy, cfg.Format, headFiles, verbose)
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -226,7 +262,7 @@ func sameMtime(old meta.FileEntry, t time.Time) bool {
 	return old.ModTime == t.Unix()
 }
 
-func snapshot(ctx context.Context, root string, store core.BlockStore, params core.ChunkParams, policy int, head map[string]meta.FileEntry, verbose io.Writer) ([]meta.FileEntry, error) {
+func snapshot(ctx context.Context, root string, store core.BlockStore, params core.ChunkParams, policy, format int, head map[string]meta.FileEntry, verbose io.Writer) ([]meta.FileEntry, error) {
 	ignore, err := loadIgnore(root)
 	if err != nil {
 		return nil, err
@@ -279,10 +315,24 @@ func snapshot(ctx context.Context, root string, store core.BlockStore, params co
 			if err != nil {
 				return err
 			}
-			files = append(files, meta.FileEntry{Path: rel, Mode: uint32(info.Mode().Perm()), ModTime: info.ModTime().Unix(), ModTimeNS: info.ModTime().UnixNano(), Link: target})
+			kind := ""
+			if format >= 4 {
+				kind = "symlink"
+			}
+			files = append(files, meta.FileEntry{Path: rel, Kind: kind, Mode: posixMode(info.Mode()), ModTime: info.ModTime().Unix(), ModTimeNS: info.ModTime().UnixNano(), Link: target})
 			return nil
 		}
 		if entry.IsDir() {
+			if format >= 4 {
+				info, err := entry.Info()
+				if os.IsNotExist(err) {
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+				files = append(files, meta.FileEntry{Path: rel, Kind: "dir", Mode: posixMode(info.Mode()), ModTime: info.ModTime().Unix(), ModTimeNS: info.ModTime().UnixNano()})
+			}
 			return nil
 		}
 		info, err := entry.Info()
@@ -293,6 +343,9 @@ func snapshot(ctx context.Context, root string, store core.BlockStore, params co
 			return err
 		}
 		if !info.Mode().IsRegular() {
+			if format >= 4 && info.Mode()&os.ModeNamedPipe != 0 {
+				files = append(files, meta.FileEntry{Path: rel, Kind: "fifo", Mode: posixMode(info.Mode()), ModTime: info.ModTime().Unix(), ModTimeNS: info.ModTime().UnixNano()})
+			}
 			return nil
 		}
 		if old, ok := head[rel]; ok && old.Link == "" && old.Size == info.Size() && sameMtime(old, info.ModTime()) && old.Mode == uint32(info.Mode().Perm()) {
@@ -309,7 +362,11 @@ func snapshot(ctx context.Context, root string, store core.BlockStore, params co
 		if err != nil {
 			return err
 		}
-		files = append(files, meta.FileEntry{Path: rel, Mode: uint32(info.Mode().Perm()), Size: size, ModTime: info.ModTime().Unix(), ModTimeNS: info.ModTime().UnixNano(), Blocks: blocks, BlockSizes: sizes})
+		kind := ""
+		if format >= 4 {
+			kind = "file"
+		}
+		files = append(files, meta.FileEntry{Path: rel, Kind: kind, Mode: posixMode(info.Mode()), Size: size, ModTime: info.ModTime().Unix(), ModTimeNS: info.ModTime().UnixNano(), Blocks: blocks, BlockSizes: sizes})
 		return nil
 	})
 	if err != nil {
@@ -390,7 +447,7 @@ func sameFiles(head map[string]meta.FileEntry, files []meta.FileEntry) bool {
 	}
 	for _, file := range files {
 		old, ok := head[file.Path]
-		if !ok || old.Mode != file.Mode || old.Size != file.Size || old.Link != file.Link || len(old.Blocks) != len(file.Blocks) {
+		if !ok || old.Kind != file.Kind || old.Mode != file.Mode || old.Size != file.Size || old.Link != file.Link || old.ContentDigest != file.ContentDigest || len(old.Blocks) != len(file.Blocks) {
 			return false
 		}
 		for i := range file.Blocks {

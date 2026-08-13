@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	core "fvs-v2-core"
+	core "github.com/fvs-lab/core"
 )
 
 // twoServers runs two independent Server instances over the same root, the

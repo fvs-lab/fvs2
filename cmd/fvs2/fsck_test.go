@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"fvs2/internal/meta"
+	"github.com/fvs-lab/fvs2/internal/meta"
 )
 
 func TestFsckPassesOnHealthyRepo(t *testing.T) {

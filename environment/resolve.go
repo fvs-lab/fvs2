@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"fvs2/internal/meta"
-	fvsrepo "fvs2/repo"
+	"github.com/fvs-lab/fvs2/internal/meta"
+	fvsrepo "github.com/fvs-lab/fvs2/repo"
 )
 
 func absRepo(baseDir, repo string) string {
