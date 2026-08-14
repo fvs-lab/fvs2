@@ -348,7 +348,7 @@ func snapshot(ctx context.Context, root string, store core.BlockStore, params co
 			}
 			return nil
 		}
-		if old, ok := head[rel]; ok && old.Link == "" && old.Size == info.Size() && sameMtime(old, info.ModTime()) && old.Mode == uint32(info.Mode().Perm()) {
+		if old, ok := head[rel]; ok && old.Link == "" && old.Size == info.Size() && sameMtime(old, info.ModTime()) && old.Mode == posixMode(info.Mode()) {
 			files = append(files, old)
 			return nil
 		}

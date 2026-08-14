@@ -546,7 +546,7 @@ func snapshotDirectoryNoStore(root string) ([]meta.FileEntry, error) {
 				}
 				return lerr
 			}
-			files = append(files, meta.FileEntry{Path: filepath.ToSlash(rel), Mode: uint32(li.Mode().Perm()), ModTime: li.ModTime().Unix(), Link: target})
+			files = append(files, meta.FileEntry{Path: filepath.ToSlash(rel), Mode: posixMode(li.Mode()), ModTime: li.ModTime().Unix(), Link: target})
 			return nil
 		}
 		if d.IsDir() {
@@ -562,7 +562,7 @@ func snapshotDirectoryNoStore(root string) ([]meta.FileEntry, error) {
 		if !info.Mode().IsRegular() {
 			return nil
 		}
-		files = append(files, meta.FileEntry{Path: filepath.ToSlash(rel), Mode: uint32(info.Mode().Perm()), Size: info.Size(), ModTime: info.ModTime().Unix()})
+		files = append(files, meta.FileEntry{Path: filepath.ToSlash(rel), Mode: posixMode(info.Mode()), Size: info.Size(), ModTime: info.ModTime().Unix()})
 		return nil
 	})
 	if err != nil {
@@ -570,6 +570,20 @@ func snapshotDirectoryNoStore(root string) ([]meta.FileEntry, error) {
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	return files, nil
+}
+
+func posixMode(mode os.FileMode) uint32 {
+	result := uint32(mode.Perm())
+	if mode&os.ModeSetuid != 0 {
+		result |= 0o4000
+	}
+	if mode&os.ModeSetgid != 0 {
+		result |= 0o2000
+	}
+	if mode&os.ModeSticky != 0 {
+		result |= 0o1000
+	}
+	return result
 }
 
 func hashFileBlocks(path string, params core.ChunkParams, policy int) ([]string, int64, error) {

@@ -188,16 +188,16 @@ func restoreCommit(ctx context.Context, dest string, store core.BlockStore, file
 					return err
 				}
 			}
-			if err := os.MkdirAll(outPath, os.FileMode(fe.Mode)); err != nil {
+			if err := os.MkdirAll(outPath, fileModeFromPOSIX(fe.Mode)); err != nil {
 				return err
 			}
-			if err := os.Chmod(outPath, os.FileMode(fe.Mode)); err != nil {
+			if err := os.Chmod(outPath, fileModeFromPOSIX(fe.Mode)); err != nil {
 				return err
 			}
 			_ = os.Chtimes(outPath, time.Now(), fileMtime(fe))
 			continue
 		case "fifo":
-			if info, err := os.Lstat(outPath); err == nil && info.Mode()&os.ModeNamedPipe != 0 && uint32(info.Mode().Perm()) == fe.Mode {
+			if info, err := os.Lstat(outPath); err == nil && info.Mode()&os.ModeNamedPipe != 0 && posixMode(info.Mode()) == fe.Mode {
 				continue
 			}
 			_ = os.Remove(outPath)
@@ -219,7 +219,7 @@ func restoreCommit(ctx context.Context, dest string, store core.BlockStore, file
 		}
 
 		if info, err := os.Lstat(outPath); err == nil {
-			if info.Mode().IsRegular() && info.Size() == fe.Size && uint32(info.Mode().Perm()) == fe.Mode && sameMtime(fe, info.ModTime()) {
+			if info.Mode().IsRegular() && info.Size() == fe.Size && posixMode(info.Mode()) == fe.Mode && sameMtime(fe, info.ModTime()) {
 				// Metadata alone is not proof of content: verify against the
 				// recorded chunk hashes unless the caller opted into the fast
 				// metadata-only mode.
@@ -279,7 +279,7 @@ func writeFileFromBlocks(ctx context.Context, outPath string, store core.BlockSt
 	if err := bw.Flush(); err != nil {
 		return err
 	}
-	if err := tmp.Chmod(os.FileMode(fe.Mode)); err != nil {
+	if err := tmp.Chmod(fileModeFromPOSIX(fe.Mode)); err != nil {
 		return err
 	}
 	if err := tmp.Sync(); err != nil {

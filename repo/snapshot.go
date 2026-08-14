@@ -327,6 +327,20 @@ func posixMode(mode fs.FileMode) uint32 {
 	return result
 }
 
+func fileModeFromPOSIX(mode uint32) fs.FileMode {
+	result := fs.FileMode(mode & 0o777)
+	if mode&0o4000 != 0 {
+		result |= os.ModeSetuid
+	}
+	if mode&0o2000 != 0 {
+		result |= os.ModeSetgid
+	}
+	if mode&0o1000 != 0 {
+		result |= os.ModeSticky
+	}
+	return result
+}
+
 func (w *SnapshotWriter) validateParents(name string) error {
 	for parent := path.Dir(name); parent != "." && parent != ""; parent = path.Dir(parent) {
 		if entry, ok := w.entries[parent]; ok && entry.Kind != string(EntryDir) {

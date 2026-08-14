@@ -206,6 +206,72 @@ func TestGCSharedKeepsBlocksFromEveryRepository(t *testing.T) {
 	}
 }
 
+func TestGCSharedCollectsUnreferencedObjects(t *testing.T) {
+	root := t.TempDir()
+	blocks := filepath.Join(root, "blocks")
+	repository, err := InitWithOptions(filepath.Join(root, "repository"), InitOptions{BlocksPath: blocks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveContent := []byte("live object")
+	writer, err := BeginSnapshot(repository.Path, SnapshotOptions{ComputeSHA256: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Add(Entry{Path: "live", Kind: EntryFile, Mode: 0o644, Size: int64(len(liveContent))}, bytes.NewReader(liveContent)); err != nil {
+		t.Fatal(err)
+	}
+	state, err := writer.Commit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := StateFiles(repository.Path, state.StateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, objects, err := core.NewObjectBackedBlockStore(blocks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := objects.MaterializeBlocks(context.Background(), filepath.Join(root, "live"), files[0].Blocks, files[0].BlockSizes, store, core.MaterializeOptions{
+		Mode: 0o644, Size: int64(len(liveContent)), ContentDigest: files[0].ContentDigest, PruneLoose: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deadContent := []byte("dead object")
+	dead, err := store.Put(deadContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := objects.MaterializeBlocks(context.Background(), filepath.Join(root, "dead"), []core.BlockID{dead}, []int64{int64(len(deadContent))}, store, core.MaterializeOptions{
+		Mode: 0o644, Size: int64(len(deadContent)), PruneLoose: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := GCShared(context.Background(), blocks, []string{repository.Path}, GCOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RemovedObjects != 1 || result.RemovedObjectBytes != int64(len(deadContent)) {
+		t.Fatalf("gc result = %+v", result)
+	}
+	if _, err := store.Get(dead); err == nil {
+		t.Fatal("unreferenced object remains readable")
+	}
+	destination := filepath.Join(root, "restored")
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(repository.Path, state.StateID, RestoreOptions{To: destination}); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(destination, "live"))
+	if err != nil || string(content) != string(liveContent) {
+		t.Fatalf("restored content = %q, err = %v", content, err)
+	}
+}
+
 func TestGCSharedRemovesEveryBlockWithoutRepositories(t *testing.T) {
 	blocks := filepath.Join(t.TempDir(), "blocks")
 	store, err := core.NewDiskBlockStore(blocks)
@@ -243,7 +309,7 @@ func TestSnapshotPreservesLayerEntries(t *testing.T) {
 		entry   Entry
 		content []byte
 	}{
-		{Entry{Path: "bin", Kind: EntryDir, Mode: 0o750, ModTime: stamp}, nil},
+		{Entry{Path: "bin", Kind: EntryDir, Mode: 0o1750, ModTime: stamp}, nil},
 		{Entry{Path: "bin/tool", Kind: EntryFile, Mode: 0o755, Size: int64(len(content)), ModTime: stamp}, content},
 		{Entry{Path: "bin/tool-copy", Kind: EntryHardlink, Mode: 0o755, ModTime: stamp, Link: "bin/tool"}, nil},
 		{Entry{Path: "bin/current", Kind: EntrySymlink, Mode: 0o777, ModTime: stamp, Link: "tool"}, nil},
@@ -283,7 +349,7 @@ func TestSnapshotPreservesLayerEntries(t *testing.T) {
 	if _, err := Restore(root, result.StateID, RestoreOptions{To: destination}); err != nil {
 		t.Fatal(err)
 	}
-	if info, err := os.Stat(filepath.Join(destination, "bin")); err != nil || info.Mode().Perm() != 0o750 {
+	if info, err := os.Stat(filepath.Join(destination, "bin")); err != nil || info.Mode().Perm() != 0o750 || info.Mode()&os.ModeSticky == 0 {
 		t.Fatalf("directory mode = %v, err = %v", info, err)
 	}
 	if target, err := os.Readlink(filepath.Join(destination, "bin/current")); err != nil || target != "tool" {
