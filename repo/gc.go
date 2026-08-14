@@ -16,13 +16,15 @@ type GCOptions struct {
 }
 
 type GCResult struct {
-	Repositories  int
-	States        int
-	LiveBlocks    int
-	RemovedBlocks int
-	RemovedBytes  int64
-	OrphanStates  int
-	Compacted     bool
+	Repositories       int
+	States             int
+	LiveBlocks         int
+	RemovedBlocks      int
+	RemovedBytes       int64
+	RemovedObjects     int
+	RemovedObjectBytes int64
+	OrphanStates       int
+	Compacted          bool
 }
 
 // GCShared marks every repository before sweeping a shared block store. All
@@ -136,24 +138,37 @@ func GCShared(ctx context.Context, blocksPath string, repositories []string, opt
 			return GCResult{}, err
 		}
 		result.Compacted = true
-		return result, nil
+	} else {
+		err = store.ForEach(func(id core.BlockID) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if live[id] {
+				return nil
+			}
+			if size, err := store.Size(id); err == nil {
+				result.RemovedBytes += size
+			}
+			result.RemovedBlocks++
+			if opts.DryRun {
+				return nil
+			}
+			return store.Delete(id)
+		})
+		if err != nil {
+			return result, err
+		}
 	}
 
-	err = store.ForEach(func(id core.BlockID) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if live[id] {
-			return nil
-		}
-		if size, err := store.Size(id); err == nil {
-			result.RemovedBytes += size
-		}
-		result.RemovedBlocks++
-		if opts.DryRun {
-			return nil
-		}
-		return store.Delete(id)
-	})
-	return result, err
+	liveObjects := make(map[core.BlockID]struct{}, len(live))
+	for id := range live {
+		liveObjects[id] = struct{}{}
+	}
+	objects, err := store.CollectObjectGarbage(ctx, liveObjects, opts.DryRun)
+	if err != nil {
+		return result, err
+	}
+	result.RemovedObjects = objects.RemovedObjects
+	result.RemovedObjectBytes = objects.RemovedBytes
+	return result, nil
 }
