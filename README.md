@@ -2,7 +2,7 @@
 
 **Fused Versioned Storage.** Time-travel for big data: snapshot, dedupe, mount.
 
-[![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go)](https://go.dev)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 FVS gives you git-style snapshots for large, mutable data (datasets, VM and disk
