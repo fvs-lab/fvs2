@@ -436,3 +436,21 @@ func TestSnapshotRejectsDigestMismatch(t *testing.T) {
 		t.Fatal("expected content digest mismatch")
 	}
 }
+
+func TestSnapshotRejectsNamesAndTargetsThatJSONCannotPreserve(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root, 0); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := BeginSnapshot(root, SnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Abort()
+	bad := string([]byte{0xff})
+	for _, entry := range []Entry{{Path: bad, Kind: EntryFile}, {Path: "link", Kind: EntrySymlink, Link: bad}, {Path: "link", Kind: EntrySymlink, Link: "a\x00b"}} {
+		if err := writer.Add(entry, bytes.NewReader(nil)); err == nil {
+			t.Fatalf("accepted unrepresentable entry: %#v", entry)
+		}
+	}
+}

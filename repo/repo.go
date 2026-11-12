@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	core "github.com/fvs-lab/core"
 	"github.com/fvs-lab/fvs2/internal/meta"
@@ -300,6 +301,10 @@ func snapshot(ctx context.Context, root string, store core.BlockStore, params co
 			return nil
 		}
 
+		if err := meta.ValidateRelPath(rel); err != nil {
+			return err
+		}
+
 		if entry.Type()&os.ModeSymlink != 0 {
 			target, err := os.Readlink(path)
 			if os.IsNotExist(err) {
@@ -314,6 +319,9 @@ func snapshot(ctx context.Context, root string, store core.BlockStore, params co
 			}
 			if err != nil {
 				return err
+			}
+			if !utf8.ValidString(target) {
+				return fmt.Errorf("symlink target is not valid UTF-8: %q", rel)
 			}
 			kind := ""
 			if format >= 4 {

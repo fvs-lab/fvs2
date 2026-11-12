@@ -185,6 +185,10 @@ func existingCheckout(destination string, expected checkoutMarker) (CheckoutResu
 }
 
 func materializeCheckout(ctx context.Context, root string, blocks *core.DiskBlockStore, objects *core.ObjectStore, files []meta.FileEntry, opts CheckoutOptions, result *CheckoutResult) error {
+	if err := preflightNativeNames(root, files); err != nil {
+		return err
+	}
+
 	for _, entry := range files {
 		if err := ctx.Err(); err != nil {
 			return err

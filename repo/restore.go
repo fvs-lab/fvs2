@@ -159,6 +159,9 @@ func safeOutPath(dest, rel string) (string, error) {
 }
 
 func restoreCommit(ctx context.Context, dest string, store core.BlockStore, files []meta.FileEntry, blockSize int, opts RestoreOptions) error {
+	if err := preflightNativeNames(dest, files); err != nil {
+		return err
+	}
 	verbose := opts.Verbose
 	for _, fe := range files {
 		if err := ctx.Err(); err != nil {

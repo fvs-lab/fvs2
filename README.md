@@ -55,11 +55,10 @@ corruption or bit-rot instead of silently returning bad data.
 
 ## Install
 
-fvs2 depends on the `fvs-v2-core` block-store module, which lives in a sibling
-repo. Clone it alongside fvs2 (the `go.mod` `replace` points at `../core`):
+fvs2 resolves `github.com/fvs-lab/core` through `go.mod`. The standalone CLI
+build works on Linux and macOS:
 
 ```bash
-git clone https://github.com/fvs-lab/core.git ../core
 # CLI (static, CGO-free)
 CGO_ENABLED=0 go build -o ./bin/fvs2 ./cmd/fvs2
 ./bin/fvs2 --help
@@ -150,6 +149,12 @@ go build -o ./bin/fvs2d ./cmd/fvs2d
 ./bin/fvs2d -repo /path/to/repo -branch main  -mount /mnt/state
 ./bin/fvs2d -repo /path/to/repo -state 1f0247 -mount /mnt/state
 ```
+
+On macOS, the experimental native FSKit adapter requires macOS 26.0 and the
+signed FVS app/extension. It has no kernel-extension fallback. See the daemon's
+[macOS build and mount guide](https://github.com/fvs-lab/fvs2d/blob/main/docs/MACOS.md).
+The Go repository CLI builds without Swift or an Apple SDK. Restore and native
+checkout reject case/Unicode collisions that the destination cannot represent.
 
 For programmatic mount lifecycle, run `fvs2d` as a persistent gRPC manager;
 `fvs2` now handles repository operations only.

@@ -14,3 +14,9 @@ func TestValidateEntryNameUsesNativeSeparators(t *testing.T) {
 		t.Fatalf("Unix filename was rejected: %v", err)
 	}
 }
+
+func TestEntryNamesRejectInvalidUTF8(t *testing.T) {
+	if err := ValidateEntryName(string([]byte{0xff})); err == nil {
+		t.Fatal("JSON would replace the invalid filename byte")
+	}
+}
