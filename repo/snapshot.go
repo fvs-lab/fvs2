@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	core "github.com/fvs-lab/core"
 	"github.com/fvs-lab/fvs2/internal/meta"
@@ -99,6 +100,9 @@ func (w *SnapshotWriter) Add(entry Entry, content io.Reader) error {
 		return err
 	}
 	entry.Path = strings.Trim(path.Clean(filepath.ToSlash(entry.Path)), "/")
+	if !utf8.ValidString(entry.Link) || strings.ContainsRune(entry.Link, 0) {
+		return fmt.Errorf("snapshot entry %q has an unrepresentable link target", entry.Path)
+	}
 	if err := meta.ValidateRelPath(entry.Path); err != nil {
 		return fmt.Errorf("snapshot entry: %w", err)
 	}
@@ -182,6 +186,9 @@ func (w *SnapshotWriter) AddReference(entry FileEntry) error {
 		return err
 	}
 	entry.Path = strings.Trim(path.Clean(filepath.ToSlash(entry.Path)), "/")
+	if !utf8.ValidString(entry.Link) || strings.ContainsRune(entry.Link, 0) {
+		return fmt.Errorf("snapshot entry %q has an unrepresentable link target", entry.Path)
+	}
 	if err := meta.ValidateRelPath(entry.Path); err != nil {
 		return fmt.Errorf("snapshot entry: %w", err)
 	}

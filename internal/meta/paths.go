@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"unicode/utf8"
 )
 
 // State and tree metadata are untrusted input: a pulled state, a corrupted
@@ -14,6 +15,9 @@ import (
 // ValidateEntryName rejects tree entry names that could redirect a restore:
 // empty names, ".", "..", and names containing a separator or NUL.
 func ValidateEntryName(name string) error {
+	if !utf8.ValidString(name) {
+		return fmt.Errorf("entry name is not valid UTF-8")
+	}
 	switch name {
 	case "":
 		return fmt.Errorf("empty entry name")
