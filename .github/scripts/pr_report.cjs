@@ -96,8 +96,7 @@ function render(run, jobs, artifacts, reports, repository) {
 }
 
 function currentRun(pr, run) {
-  return pr.head.sha === run.head_sha || pr.merge_commit_sha === run.head_sha ||
-    (run.pull_requests || []).some(request => request.number === pr.number && request.head?.sha === pr.head.sha);
+  return pr.head.sha === run.head_sha || pr.merge_commit_sha === run.head_sha;
 }
 
 async function publish({github, context, core}) {

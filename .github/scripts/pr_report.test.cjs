@@ -29,5 +29,5 @@ test('stale runs cannot overwrite the current PR report', () => {
   assert.equal(currentRun(pr, {head_sha: 'old', pull_requests: [{number: 3, head: {sha: 'old'}}]}), false);
   assert.equal(currentRun(pr, {head_sha: 'new'}), true);
   assert.equal(currentRun(pr, {head_sha: 'new-merge'}), true);
-  assert.equal(currentRun(pr, {head_sha: 'snapshot-merge', pull_requests: [{number: 3, head: {sha: 'new'}}]}), true);
+  assert.equal(currentRun(pr, {head_sha: 'snapshot-merge', pull_requests: [{number: 3, head: {sha: 'new'}}]}), false);
 });
