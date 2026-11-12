@@ -1,0 +1,194 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GO_VERSION: "1.26.9"
+  EUPROVGUARD_VERSION: "v1.2.1"
+  PROJECT: fvs2
+  GOWORK: "off"
+
+jobs:
+  platforms:
+    name: Platforms
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - id: targets
+        run: |
+          python3 - <<'PYCODE'
+          import json, os
+          with open('.github/platforms.json') as source:
+              matrix = json.load(source)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('matrix=' + json.dumps(matrix) + '\n')
+          PYCODE
+  verify:
+    name: Verify ${{ matrix.target }}
+    needs: platforms
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.platforms.outputs.matrix) }}
+    env:
+      GOARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Set output directory
+        shell: bash
+        run: |
+          work="$HOME/artifacts/${PROJECT}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.target }}"
+          mkdir -p "$work/temporary"
+          {
+            echo "FVS_BUILD_DIR=$work"
+            echo "TMPDIR=$work/temporary"
+            echo "TMP=$work/temporary"
+            echo "TEMP=$work/temporary"
+          } >> "$GITHUB_ENV"
+          if [ "$GOARCH" = 386 ]; then echo 'CGO_ENABLED=0' >> "$GITHUB_ENV"; fi
+      - name: Check pipeline tools
+        run: |
+          python3 -m unittest discover -s .github/scripts -p test_ci.py
+          node --test .github/scripts/pr_report.test.cjs
+      - name: Build and smoke test
+        run: python3 .github/scripts/ci.py build --project "$PROJECT" --target "${{ matrix.target }}" --output "$FVS_BUILD_DIR"
+      - name: Run tests
+        run: python3 .github/scripts/ci.py test --project "$PROJECT" --target "${{ matrix.target }}" --output "$FVS_BUILD_DIR"
+      - name: Vet
+        run: go vet ./...
+      - name: Verify C archive and available mounts
+        if: env.PROJECT == 'fvs2d' && matrix.arch != '386'
+        run: python3 .github/scripts/ci.py bridge --project "$PROJECT" --target "${{ matrix.target }}" --output "$FVS_BUILD_DIR"
+      - name: Upload build
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: build-${{ matrix.target }}
+          path: ${{ env.FVS_BUILD_DIR }}/dist/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: report-${{ matrix.target }}
+          path: |
+            ${{ env.FVS_BUILD_DIR }}/*.summary.json
+            ${{ env.FVS_BUILD_DIR }}/tests.jsonl
+            ${{ env.FVS_BUILD_DIR }}/mount-tests/results.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  compliance:
+    name: EUProvGuard
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: Set output directory
+        run: |
+          work="$HOME/artifacts/${PROJECT}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-compliance"
+          mkdir -p "$work/temporary"
+          {
+            echo "FVS_BUILD_DIR=$work"
+            echo "TMPDIR=$work/temporary"
+            echo "TMP=$work/temporary"
+            echo "TEMP=$work/temporary"
+          } >> "$GITHUB_ENV"
+      - name: Install EUProvGuard
+        run: go install "github.com/fabricatorsltd/euprovguard@${EUPROVGUARD_VERSION}"
+      - name: Scan and reject every finding
+        run: python3 .github/scripts/ci.py scan --project "$PROJECT" --output "$FVS_BUILD_DIR"
+      - name: Upload scan results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: report-compliance
+          path: |
+            ${{ env.FVS_BUILD_DIR }}/compliance/
+            ${{ env.FVS_BUILD_DIR }}/compliance.summary.json
+          if-no-files-found: error
+          retention-days: 30
+
+  check:
+    name: Validation
+    needs: [platforms, verify, compliance]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all checks
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          results = json.loads(os.environ['RESULTS'])
+          for name, job in results.items():
+              print(name, job['result'])
+          sys.exit(0 if all(job['result'] == 'success' for job in results.values()) else 1)
+          PY
+
+  release:
+    name: Release assets
+    needs: check
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: build-*
+          path: release-assets
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: report-compliance
+          path: compliance
+      - name: Publish validated assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, pathlib, shutil, subprocess
+          root = pathlib.Path('release-assets')
+          shutil.make_archive(str(root / (os.environ['PROJECT'] + '-compliance')), 'zip', 'compliance')
+          assets = sorted(p for p in root.iterdir() if p.is_file())
+          if not assets:
+              raise SystemExit('No build assets were downloaded')
+          checksums = root / 'SHA256SUMS'
+          checksums.write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + p.name + '\n' for p in assets))
+          tag = os.environ['GITHUB_REF_NAME']
+          if subprocess.run(['gh', 'release', 'view', tag], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
+              subprocess.run(['gh', 'release', 'create', tag, '--verify-tag', '--title', tag, '--generate-notes'], check=True)
+          subprocess.run(['gh', 'release', 'upload', tag, *map(str, assets), str(checksums), '--clobber'], check=True)
+          PY

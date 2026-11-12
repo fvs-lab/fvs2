@@ -1,0 +1,24 @@
+{
+  "include": [
+    {
+      "target": "linux-amd64",
+      "runner": "ubuntu-latest",
+      "arch": "amd64"
+    },
+    {
+      "target": "linux-386",
+      "runner": "ubuntu-latest",
+      "arch": "386"
+    },
+    {
+      "target": "linux-arm64",
+      "runner": "ubuntu-24.04-arm",
+      "arch": "arm64"
+    },
+    {
+      "target": "darwin-arm64",
+      "runner": "macos-26",
+      "arch": "arm64"
+    }
+  ]
+}

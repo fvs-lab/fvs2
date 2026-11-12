@@ -1,6 +1,6 @@
 module github.com/fvs-lab/fvs2
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/fvs-lab/core v0.1.3
@@ -8,14 +8,14 @@ require (
 	github.com/minio/minio-go/v7 v7.2.1
 	github.com/mirkobrombin/go-cli-builder/v2 v2.2.1
 	github.com/zeebo/blake3 v0.2.4
-	golang.org/x/sys v0.44.0
+	golang.org/x/sys v0.50.0
 )
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/klauspost/compress v1.19.0 // indirect
+	github.com/klauspost/compress v1.20.4 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.11 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect
@@ -28,9 +28,9 @@ require (
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.shabbyrobe.org/gocovmerge v0.0.0-20230507111327-fa4f82cfbf4d // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/crypto v0.51.0 // indirect
-	golang.org/x/net v0.53.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
-	golang.org/x/tools v0.44.0 // indirect
+	golang.org/x/crypto v0.59.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
+	golang.org/x/tools v0.52.0 // indirect
 	gopkg.in/ini.v1 v1.67.2 // indirect
 )
