@@ -36,3 +36,18 @@ func TestNativePreflightPreservesExistingSpelling(t *testing.T) {
 		}
 	}
 }
+
+func TestNativePreflightMissingDestination(t *testing.T) {
+	parent := t.TempDir()
+	destination := filepath.Join(parent, "missing", "restore")
+	if err := preflightNativeNames(destination, []meta.FileEntry{{Path: "nested/file"}}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("preflight created destination paths or left a probe: %v", entries)
+	}
+}

@@ -4,7 +4,6 @@ package repo
 
 import (
 	"fmt"
-	"golang.org/x/text/unicode/norm"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/fvs-lab/fvs2/internal/meta"
+	"golang.org/x/text/unicode/norm"
 )
 
 func preflightNativeNames(destination string, files []meta.FileEntry) error {
@@ -20,8 +20,23 @@ func preflightNativeNames(destination string, files []meta.FileEntry) error {
 			return fmt.Errorf("macOS cannot represent a non-UTF-8 snapshot name or symlink: %w", syscall.EILSEQ)
 		}
 	}
-	// Query the destination volume by behavior, including case-sensitive APFS.
-	probe, err := os.MkdirTemp(destination, ".fvs-name-check-")
+	// Query the destination volume before creating any restored paths.
+	probeRoot := destination
+	for {
+		_, err := os.Stat(probeRoot)
+		if err == nil {
+			break
+		}
+		if !os.IsNotExist(err) {
+			return err
+		}
+		parent := filepath.Dir(probeRoot)
+		if parent == probeRoot {
+			return err
+		}
+		probeRoot = parent
+	}
+	probe, err := os.MkdirTemp(probeRoot, ".fvs-name-check-")
 	if err != nil {
 		return err
 	}
